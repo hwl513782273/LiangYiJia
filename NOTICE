@@ -1,0 +1,24 @@
+NOTICE
+======
+
+LiangYiJia / 晾衣架 is a modified version of Tendedero
+(https://github.com/alejandrobujan/tendedero), MIT licensed,
+Copyright (c) 2026 Alejandro Buján.
+
+Modifications, Copyright (c) 2026 banqiu.
+
+Name and icon
+-------------
+
+The MIT License in LICENSE covers the source code only. It grants no rights
+to the Tendedero name or the Tendedero icon of the original project.
+
+You may build and use the app as published, and you may refer to Tendedero
+to say where your work comes from. Modified or redistributed versions must
+use a different name and a different icon, and must not suggest that they
+are Tendedero or are endorsed by its author.
+
+This repository follows that rule: it ships under the name LiangYiJia /
+晾衣架, the app's own UI carries the name 晾衣架 rather than Tendedero, and
+the icon is drawn from scratch by scripts/make-icon.swift. The original
+project's icon artwork is not part of this repository.

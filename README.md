@@ -207,7 +207,7 @@ Implementation notes and the pitfalls behind each decision are in [docs/CHANGES.
 > - 允许个人与商业免费使用、修改、再分发，须保留版权与许可声明。
 > - 完整条款见 [LICENSE](https://github.com/hwl513782273/LiangYiJia/blob/main/LICENSE)。
 >
-> 名称「晾衣架 / LiangYiJia」与图标为本改版自备，沿用 MIT 许可；原项目的名称与图标不在此仓库内。
+> 名称「晾衣架 / LiangYiJia」与图标为本改版自备，沿用 MIT 许可；原项目的名称与图标不在此仓库内，相关说明见 [NOTICE](https://github.com/hwl513782273/LiangYiJia/blob/main/NOTICE)。
 
 ## 支持 / Support
 
