@@ -135,6 +135,32 @@ open "/Applications/晾衣架.app"
 
 首次启动会问「让晾衣架接管你的截图？」，点**开启**。
 
+## 开机自启
+
+已经配好，配置文件在 `~/Library/LaunchAgents/com.local.liangyijia.plist`。
+
+`~/Library/LaunchAgents/` 这个目录**登录时会被 launchd 自动扫描**，所以写完文件不需要再执行 `launchctl load`。macOS 会弹一条「后台项目已添加」，说明已经登记上。
+
+**怎么确认在生效**：系统设置 → 通用 → **登录项与扩展** → 往下翻「允许在后台」，应该能看到 `Tendedero`（App 的显示名是「晾衣架」，但可执行文件名沿用了 Tendedero，系统按可执行文件名显示）。开关保持打开。
+
+**如果没有生效**，在「终端」里手动加载一次（终端有完整权限，这里的自动化环境没有）：
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.liangyijia.plist
+```
+
+想临时关掉自启又不想删文件：
+
+```bash
+launchctl bootout gui/$(id -u)/com.local.liangyijia
+```
+
+彻底不要了就直接删那个 plist。
+
+**为什么不用 App 内的「开机启动」开关**：那套要走 `SMAppService`，要求正式签名；本项目是 ad-hoc 签名，注册必然失败。LaunchAgent 不挑签名。
+
+**为什么 KeepAlive 故意不写**：写 `true` 的话，你从菜单里退出，launchd 会立刻把它拉回来，像甩不掉。现在的行为是「登录时起来一次，你退出就退出」。
+
 ## 注意
 
 | 项 | 说明 |
