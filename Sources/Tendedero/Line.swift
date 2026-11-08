@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import SwiftUI   // withAnimation：滚动到最老一头 / 回到最新一头要有过渡
 import os
 
 let log = Logger(subsystem: "app.tendedero.Tendedero", category: "line")
@@ -107,8 +108,12 @@ final class Line: ObservableObject {
         // A full line lets the oldest photo fall off the far end. Only one: a
         // line hung on a wider screen keeps its length here instead of losing
         // several photos to a single capture.
-        if liveCount > maxItems, let oldest = oldestLoose {
-            letGo(oldest.id)
+        // 满线时只清一张：屏幕更宽时线保住的长度不会因为一次复制掉好几张。
+        // 正在清（滚到最老那头、等掉落）时不另开一条，免得两张同时被点名；
+        // 这一轮稍后自己会补上。
+        if liveCount > maxItems, lettingGo == nil, let oldest = oldestLoose {
+            // 新卡片正从截图位置飞过来时先等它落位，否则它飞向的是滚走以后的位置。
+            letGo(oldest.id, startDelay: flying ? 0.7 : 0)
         }
         save()
         if !quietly { play("Tink", volume: 0.35) }
@@ -318,19 +323,81 @@ final class Line: ObservableObject {
 
     /// After Keep on line is lowered, the oldest photos past it go the way
     /// of a full line.
+    /// 把「保留数量」调小时，超出的老照片按满线的规矩下线（不来回滚动）。
     func trim() {
         while liveCount > maxItems, let oldest = oldestLoose {
-            letGo(oldest.id)
+            letGo(oldest.id, stepAside: false)
         }
         scroll = 0
+    }
+
+    /// 正在清掉的那一张。从「滚到最老一头」到「真的掉落」之间隔着几帧，
+    /// 这期间不再另起一条清理，免得同一张被点名两次、或者一次掉两张。
+    private var lettingGo: UUID?
+
+    /// 最老那张下线：自家文件夹里的进废纸篓，别处的只离开线。
+    private func dropOldest(_ id: UUID) {
+        if isInInbox(id), trash(id, quietly: true, step: nil) { return }
+        drop(id, quietly: true)
+    }
+
+    /// 滚到最老一头时线停的位置：最老那张刚好落在最前面看得见的地方。
+    /// 线不滚动时是 0。
+    private var frontScroll: CGFloat {
+        CGFloat(max(0, items.count - visibleCount)) * Layout.spacing
     }
 
     /// The oldest photo falling off a full line. Like the cross, a file from
     /// Tendedero's folder goes to the Trash, or nothing would ever take it out
     /// of that folder. If the Trash refuses it, it still leaves the line.
-    private func letGo(_ id: UUID) {
-        if isInInbox(id), trash(id, quietly: true, step: nil) { return }
-        drop(id, quietly: true)
+    ///
+    /// 清理的过场（看得见才算数）：
+    /// ① 把最老的两张（要掉的那张 + 它后面那张）一起滚到线的最前端；
+    /// ② 最老那张照原样掉落（动画没动，还是 CaptureFlight 在整屏上画）；
+    /// ③ 后面那张立刻补到最前面，不留空位；
+    /// ④ 滚回最新的一头，顺手把还超出的清完。
+    ///
+    /// - Parameters:
+    ///   - stepAside: false 时不做这套过场（一次要清好几张时用）。
+    ///   - startDelay: 开头等多久才滚；新卡片正飞过来时要等它落位。
+    private func letGo(_ id: UUID, stepAside: Bool = true, startDelay: TimeInterval = 0) {
+        // 线不滚动、或者一眼看得全：最老那张本来就在最前面，直接掉，
+        // 但马上补位，整排不再等零点几秒才跳一格。
+        guard stepAside, Line.keepOnLine != nil, items.count > visibleCount else {
+            dropOldest(id)
+            if stepAside { sweepFallen() }
+            return
+        }
+        lettingGo = id
+        DispatchQueue.main.asyncAfter(deadline: .now() + startDelay) { [weak self] in
+            guard let self else { return }
+            // ① 滚到最老一头
+            log.notice("清理 ①：滚到最老一头（offset \(self.frontScroll, privacy: .public)）")
+            withAnimation(.easeInOut(duration: 0.35)) { self.scroll = self.frontScroll }
+            // 等滚动的动画走完再掉，卡片位置才对得上
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
+                guard let self, self.items.contains(where: { $0.id == id && !$0.falling }) else {
+                    self?.lettingGo = nil
+                    return
+                }
+                // ② 照原样掉落
+                log.notice("清理 ②：最老那张掉落")
+                self.dropOldest(id)
+                // ③ 后面那张立刻补到最前面（位置别停在滚过头的空处）
+                self.sweepFallen()
+                if self.scroll > self.frontScroll { self.scroll = self.frontScroll }
+                self.lettingGo = nil
+                // ④ 掉完了滚回最新的一头
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+                    guard let self else { return }
+                    log.notice("清理 ④：滚回最新的一头")
+                    withAnimation(.easeInOut(duration: 0.35)) { self.scroll = 0 }
+                    if self.liveCount > self.maxItems, let next = self.oldestLoose {
+                        self.letGo(next.id, stepAside: false)
+                    }
+                }
+            }
+        }
     }
 
     /// Inbox mode: keep a screenshot by moving it to the Desktop.

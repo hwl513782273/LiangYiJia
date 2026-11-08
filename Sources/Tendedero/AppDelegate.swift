@@ -372,7 +372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func fall(_ item: Pegged) {
         guard isPresent, isRevealed, !item.flying, !Self.reducesMotion, let screen = panel.screen,
               let card = cardFrame(for: item.id),
-              let image = item.thumb.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+              let image = item.thumb.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            // 线收着（或者开了减弱动态）时掉落不画出来，只从线上消失
+            log.notice("掉落动画跳过：present=\(self.isPresent, privacy: .public) revealed=\(self.isRevealed, privacy: .public) flying=\(item.flying, privacy: .public)")
+            return
+        }
+        log.notice("掉落动画开播：x=\(card.minX, privacy: .public)")
         CaptureFlight.fall(image: image, card: card, tilt: CGFloat(item.tilt), pinned: item.kept, on: screen)
     }
 
