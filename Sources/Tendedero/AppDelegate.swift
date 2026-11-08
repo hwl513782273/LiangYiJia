@@ -96,7 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         restoreSettingsOnTermination()
         startWatcher()
         clipboardWatcher = ClipboardWatcher { [weak self] url in self?.hangCapture(url) }
-        if ClipboardWatcher.isEnabled { clipboardWatcher.start() }
+        // 定时器总是开着，不再受开关控制：
+        // 关掉「挂上复制的内容」只是不再挂新东西，
+        // 但「点文字卡把原文复制回来」还得靠它盯着剪贴板。
+        clipboardWatcher.start()
 
         registerShortcut()
 
@@ -264,10 +267,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if alert.runModal() == .alertFirstButtonReturn { setInbox(true) }
     }
 
-    /// Watching the clipboard is opt in, from the menu bar only.
+    /// 挂不挂剪贴板内容是 opt in，只能从菜单栏打开。
+    /// 注意这里不 stop 定时器：关掉只是不再挂新内容，
+    /// 「点文字卡还原原文」还要用同一个定时器，停了就点不出文字了。
     private func setClipboard(_ on: Bool) {
         ClipboardWatcher.isEnabled = on
-        if on { clipboardWatcher.start() } else { clipboardWatcher.stop() }
+        if on { clipboardWatcher.start() }
         updateStatusIcon()
     }
 
