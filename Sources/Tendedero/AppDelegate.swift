@@ -2,7 +2,6 @@ import AppKit
 import Carbon
 import Combine
 import Quartz
-import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -90,6 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(!newValue, forKey: "quietHang") }
     }
 
+    /// 一直显示：线一直挂在屏幕顶上，不再因为指针离开而自动收回。
+    /// 调用时机：菜单里勾选时写入；tick / itemsChanged / 启动恢复时读取。
+    ///
+    /// 默认关。开了之后，手动点菜单「收起线」仍然能收起来——
+    /// 那种情况属于用户明确要求，不该被这个开关拽回来。
+    static var alwaysShown: Bool {
+        get { UserDefaults.standard.bool(forKey: "alwaysShown") }
+        set { UserDefaults.standard.set(newValue, forKey: "alwaysShown") }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let host = NSHostingView(rootView: LineView(line: line))
         host.sizingOptions = []
@@ -133,7 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { [weak self] _ in self?.itemsChanged() }
             .store(in: &cancellables)
         // Photos kept from last time show themselves for a moment.
-        if line.liveCount > 0 { comeDown(on: nil) }
+        // 勾了「一直显示」的话，即便这次一条都没有，绳子也要摆出来。
+        if line.liveCount > 0 || Self.alwaysShown { comeDown(on: nil) }
 
         // Entering or leaving full screen switches Space. Check again once the
         // switch animation has settled.
@@ -302,7 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func itemsChanged() {
         updateStatusIcon()
         Held.forget(except: Set(line.items.filter { !$0.falling && $0.held }.map(\.id)))
-        guard line.liveCount == 0, !keepOpen else { return }
+        // 「一直显示」时空气也要留着：绳子本来就该在那儿，卡片取完了它也不该消失。
+        guard line.liveCount == 0, !keepOpen, !Self.alwaysShown else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self, self.line.liveCount == 0, !self.keepOpen else { return }
             self.wanted = false
@@ -317,7 +328,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateCapacity()
         wanted = true
         refresh()
-        if Self.peeksAtNew { reveal(peekFor: 2.5) }
+        // 一直显示：放下来就待着，不用「闪一下再收回」那套
+        if Self.alwaysShown {
+            reveal()
+        } else if Self.peeksAtNew {
+            reveal(peekFor: 2.5)
+        }
     }
 
     // MARK: The capture flying to the line
@@ -413,6 +429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ?? LinePanel.screenUnderPointer().map(FullScreen.blocksLine(on:)) ?? false)
         if wanted && !blocked {
             present()
+            // 一直显示：窗口一被放回来（比如全屏 App 退出、切回桌面）就把线也放下，
+            // 否则它会一直停在上一次被全屏挡住时那个「收着」的状态。
+            if Self.alwaysShown, !isRevealed { reveal() }
         } else {
             dismiss()
         }
@@ -516,6 +535,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refresh()
             reveal(pinned: true)
         }
+    }
+
+    /// 「一直显示」刚被切换，立刻让它生效。
+    /// 调用时机：菜单里点那一项之后。
+    ///
+    /// 打开：马上把线放下来（哪怕线上是空的），不然要等下一次复制才有反应。
+    /// 关掉：只是清掉「指针没离开」的假状态，收不收交给 tick 照老规矩判断，
+    /// 不在这里硬收——指针可能正停在线上，硬收会显得莫名其妙。
+    private func applyAlwaysShown() {
+        if Self.alwaysShown {
+            panel.placeOnScreen()
+            updateCapacity()
+            wanted = true
+            refresh()
+            reveal()
+        } else {
+            awaySince = nil
+        }
+        updateStatusIcon()
     }
 
     private func startMouseTracking() {
@@ -639,7 +677,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu || Share.shared.isOpen
             || line.pressedID != nil || now < peekUntil
-        if inside || busy {
+        // 勾了「一直显示」就永远当作指针还在线上：awaySince 不累加，永不收回。
+        if inside || busy || Self.alwaysShown {
             awaySince = nil
         } else {
             let since = awaySince ?? now
@@ -973,7 +1012,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatusIcon() {
         let on = ClipboardWatcher.isEnabled
         let count = line.liveCount
-        let description = on ? L("Tendedero, hanging copied images") : "Tendedero"
+        // 朗读用的名字跟着 App 走：bundle 里叫「晾衣架」，这里就不能残留 Tendedero，
+        // 否则旁白念出来是别人的名字。
+        let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "晾衣架"
+        let description = on ? L("Tendedero, hanging copied images") : appName
         let state = count == 0 ? L("The line is empty") : String(format: L("%d on the line"), count)
         let image = NSImage(systemSymbolName: on ? "tshirt.fill" : "tshirt",
                             accessibilityDescription: "\(description), \(state)")
@@ -994,6 +1036,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toggleItem.keyEquivalentModifierMask = shortcut.modifiers
         }
         menu.addItem(toggleItem)
+
+        // 一直显示：勾上之后线常驻屏幕顶，不再因为指针离开而收回
+        let alwaysItem = ClosureMenuItem(L("Always show")) { [weak self] in
+            AppDelegate.alwaysShown.toggle()
+            self?.applyAlwaysShown()
+        }
+        alwaysItem.state = Self.alwaysShown ? .on : .off
+        alwaysItem.toolTip = L("The line stays on screen and never tucks away")
+        menu.addItem(alwaysItem)
 
         let clearItem = ClosureMenuItem(L("Take everything down")) { [weak self] in
             self?.line.clear()
@@ -1125,7 +1176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let login = ClosureMenuItem(L("Open at login")) {
             AppDelegate.toggleLaunchAtLogin()
         }
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        login.state = AppDelegate.opensAtLogin ? .on : .off
         menu.addItem(login)
 
         // The app never connects to anything, so it cannot tell when a new
@@ -1155,11 +1206,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private static func toggleLaunchAtLogin() {
+        // 原版这里用 SMAppService.mainApp.register()。它要求 App 有正式签名，
+        // 本项目是 ad-hoc 签名，每次重编译指纹都变，注册必然抛错。
+        // 改成自己维护一个 LaunchAgent：launchd 登录时会自动扫描这个目录，
+        // 不需要任何签名，也不需要提前 launchctl load。
+        let agent = loginAgentURL
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
+            if FileManager.default.fileExists(atPath: agent.path) {
+                try FileManager.default.removeItem(at: agent)
             } else {
-                try SMAppService.mainApp.register()
+                try loginAgentPlist().write(to: agent, atomically: true, encoding: .utf8)
             }
         } catch {
             let alert = NSAlert()
@@ -1168,6 +1224,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         }
+    }
+
+    /// 登录自启那个 plist 的落点。
+    /// 调用时机：菜单里要显示开关状态、以及切换时读写文件。
+    static var loginAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.local.liangyijia.plist")
+    }
+
+    /// 现在算不算开了自启：只看文件在不在。
+    /// 不查 launchctl：那个要特权，查不到还会误判成「没开」。
+    static var opensAtLogin: Bool {
+        FileManager.default.fileExists(atPath: loginAgentURL.path)
+    }
+
+    /// 生成自启配置内容。
+    /// 调用时机：切换「登录时打开」把它打开时。
+    ///
+    /// 只写三个键：多余的键（LimitLoadToSessionType 之类）出问题时是静默失败，
+    /// 越少越不容易在登录那一刻莫名不生效。也不写 KeepAlive——写 true 的话
+    /// 用户从菜单里退出，launchd 会立刻把它拉回来，像甩不掉。
+    private static func loginAgentPlist() -> String {
+        // 用当前正在跑的可执行文件路径，而不是写死；App 被挪过位置也对得上
+        let exe = Bundle.main.executablePath
+            ?? "/Applications/晾衣架.app/Contents/MacOS/晾衣架"
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key>
+          <string>com.local.liangyijia</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>\(exe)</string>
+          </array>
+          <key>RunAtLoad</key>
+          <true/>
+        </dict>
+        </plist>
+
+        """
     }
 
     // MARK: Quick Look

@@ -7,14 +7,18 @@ cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
 APP="build/晾衣架.app"
 VERSION="1.0.0"
-# 二进制沿用 Tendedero 这个名字：SwiftPM 的 target 名改了会牵动所有文件，没必要
-BIN_NAME="Tendedero"
+# SwiftPM 的 target 名保持 Tendedero：改它要动 Sources 目录名，牵连太大，没必要
+PRODUCT_NAME="Tendedero"
+# 装进 bundle 后的可执行文件名 = 系统认的 App 名。
+# 这里必须叫「晾衣架」：macOS 的「后台项目已添加」通知、登录项列表、
+# 活动监视器里的进程名，全都取这个文件名，写 Tendedero 就会显示成别人的名字。
+BIN_NAME="晾衣架"
 
 echo "==> 编译（只编 arm64：这台机器是 Apple Silicon，省一半时间）"
 # --disable-sandbox：SwiftPM 评估 Package.swift 时会调用 sandbox-exec，
 # 在我们这个受限环境里会报 Operation not permitted，关掉即可
 swift build -c "$CONFIG" --triple arm64-apple-macosx14.0 --disable-sandbox >&2
-BIN="$(swift build -c "$CONFIG" --triple arm64-apple-macosx14.0 --disable-sandbox --show-bin-path)/$BIN_NAME"
+BIN="$(swift build -c "$CONFIG" --triple arm64-apple-macosx14.0 --disable-sandbox --show-bin-path)/$PRODUCT_NAME"
 
 echo "==> 组装 app bundle"
 rm -rf "$APP"
