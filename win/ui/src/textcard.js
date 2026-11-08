@@ -81,21 +81,24 @@ function drawBackground(ctx, w, h, pal) {
 }
 
 /** 文字卡：表头「来源 · 时间」+ 正文 + 页脚。 */
-export function makeTextCard({ text, source = '剪贴板', date = new Date(), dark = true }) {
+export function makeTextCard({ text, source = '剪贴板', date = new Date(), dark = true, expanded = false }) {
   const pal = palette(dark);
   const body = tidy(text);
+  // 展开版：给悬停预览用。宽度加倍、正文不截断，最多到 1.9 倍高度就收住。
+  const w = expanded ? W * 1.55 : W;
+  const maxBody = expanded ? 380 : MAX_BODY;
+  const lineH = expanded ? 24 : 22;
 
   // 先用一个临时 ctx 量出行数与高度
   const probe = document.createElement('canvas').getContext('2d');
-  const bodyFont = '16px -apple-system, "Microsoft YaHei", "Segoe UI", system-ui, sans-serif';
+  const bodyFont = `${expanded ? 17 : 16}px -apple-system, "Microsoft YaHei", "Segoe UI", system-ui, sans-serif`;
   probe.font = bodyFont;
-  let lines = wrap(probe, body, W - PAD * 2);
+  let lines = wrap(probe, body, w - PAD * 2);
   let truncated = false;
 
-  // 正文最多 MAX_BODY，超了就砍掉最后一行并加省略号
-  const lineH = 22;
-  if (lines.length * lineH > MAX_BODY) {
-    const keep = Math.max(1, Math.floor(MAX_BODY / lineH));
+  // 正文最多 maxBody，超了就砍掉最后一行并加省略号
+  if (lines.length * lineH > maxBody) {
+    const keep = Math.max(1, Math.floor(maxBody / lineH));
     lines = lines.slice(0, keep);
     truncated = true;
     const last = lines[lines.length - 1];
@@ -108,8 +111,8 @@ export function makeTextCard({ text, source = '剪贴板', date = new Date(), da
   const bodyH = Math.max(lines.length * lineH + 6, 20);
   const total = PAD + headerH + gap + bodyH + gap + footerH + PAD;
 
-  const { canvas, ctx } = newCanvas(W, total);
-  drawBackground(ctx, W, total, pal);
+  const { canvas, ctx } = newCanvas(w, total);
+  drawBackground(ctx, w, total, pal);
 
   // 表头
   ctx.font = '10.5px -apple-system, "Microsoft YaHei", "Segoe UI", system-ui, sans-serif';
@@ -133,8 +136,9 @@ export function makeTextCard({ text, source = '剪贴板', date = new Date(), da
 }
 
 /** 链接卡：域名 + 标题 + 路径。 */
-export function makeLinkCard({ url, title = '', source = '剪贴板', date = new Date(), dark = true }) {
+export function makeLinkCard({ url, title = '', source = '剪贴板', date = new Date(), dark = true, expanded = false }) {
   const pal = palette(dark);
+  const w = expanded ? W * 1.55 : W;
   let host = '';
   let path = '';
   try {
@@ -148,7 +152,7 @@ export function makeLinkCard({ url, title = '', source = '剪贴板', date = new
   const titleFont = '600 15px -apple-system, "Microsoft YaHei", "Segoe UI", system-ui, sans-serif';
   const probe = document.createElement('canvas').getContext('2d');
   probe.font = titleFont;
-  const titleLines = title ? wrap(probe, title, W - PAD * 2).slice(0, 4) : [];
+  const titleLines = title ? wrap(probe, title, w - PAD * 2).slice(0, expanded ? 10 : 4) : [];
 
   const headerH = 14;
   const hostH = 17;
@@ -157,8 +161,8 @@ export function makeLinkCard({ url, title = '', source = '剪贴板', date = new
   const titleH = titleLines.length ? titleLines.length * 21 + 6 : 0;
   const total = PAD + headerH + gap + hostH + (titleH ? gap + titleH : 0) + gap + urlH + PAD;
 
-  const { canvas, ctx } = newCanvas(W, total);
-  drawBackground(ctx, W, total, pal);
+  const { canvas, ctx } = newCanvas(w, total);
+  drawBackground(ctx, w, total, pal);
   ctx.textBaseline = 'top';
 
   const small = '10.5px -apple-system, "Microsoft YaHei", "Segoe UI", system-ui, sans-serif';
@@ -185,7 +189,7 @@ export function makeLinkCard({ url, title = '', source = '剪贴板', date = new
   y += gap;
   ctx.font = small;
   ctx.fillStyle = pal.secondary;
-  ctx.fillText(path.slice(0, 46), PAD, y);
+  ctx.fillText(expanded ? path : path.slice(0, 46), PAD, y);
 
   return canvas;
 }

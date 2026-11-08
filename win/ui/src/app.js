@@ -17,6 +17,20 @@ let hoverId = null;
 let reveal = 1;          // 1 = 放下，0 = 收起
 let revealTarget = 1;
 
+// 「只有复制的时候显示」/「一直显示」—— 对应 macOS 版菜单里的同一个开关。
+// 默认后者关闭：内容来了滑下来，几秒没人理就收回去；指针移到屏幕顶部也能叫出来。
+// 托盘菜单里打开「一直显示」后，这条线就常驻不收。
+let alwaysShown = false;
+let lastActive = performance.now();
+let lastCursor = { x: -1, y: -1 };   // 最后一次已知的指针位置（窗口内 CSS 坐标）
+const HIDE_AFTER = 3200;   // 毫秒：最后一次交互后多久收回
+
+/** 把线放下来，并重置「多久没理我」的计时。 */
+function showLine() {
+  revealTarget = 1;
+  lastActive = performance.now();
+}
+
 const params = new URLSearchParams(location.search);
 
 // 原生模式：页面跑在 Tauri 里（有 __TAURI__）时，去掉假桌面和工具栏、背景透明，
@@ -163,6 +177,15 @@ function frame(now) {
 
   line.tick(dt);
 
+  // 指针停在热区里就一直放着（事件只在移动时来，所以每帧看一次记住的位置）
+  if (lastCursor.y >= 0 && lastCursor.y <= line.layout.panelHeight + 24) showLine();
+
+  // 只有复制时显示：hover 或最近有过交互就不收
+  if (!alwaysShown && revealTarget === 1 && hoverId == null && performance.now() - lastActive > HIDE_AFTER) {
+    revealTarget = 0;
+    if (isNative) tauriInvoke('js_log', { msg: `hide: idle=${Math.round(performance.now() - lastActive)}ms` }).catch(() => {});
+  }
+
   // 收起/放下做个简单的补间
   if (reveal !== revealTarget) {
     const step = dt / 0.32;
@@ -176,6 +199,33 @@ function frame(now) {
 // ---------- 鼠标 ----------
 // 浏览器原型直接听 mousemove；原生模式下窗口大部分时间是点击穿透的，
 // 收不到 mousemove，改由 Rust 侧轮询系统光标后通过 'cursor' 事件送坐标过来。
+/**
+ * 悬停预览图按需生成，生成一次就缓存。
+ * 依据是卡片自己的内容：文字卡/链接卡重画一张「展开版」，图片卡直接用原图。
+ */
+function ensurePreview(it) {
+  if (it.preview) return;
+  if (it.kind === 'text' && it.text) {
+    it.preview = { img: makeTextCard({ text: it.text, source: it.source, dark, expanded: true }), scale: 2 };
+  } else if (it.kind === 'link' && it.url) {
+    it.preview = { img: makeLinkCard({ url: it.url, title: it.title, source: it.source, dark, expanded: true }), scale: 2 };
+  } else if (it.image) {
+    it.preview = { img: it.image, scale: 1 };
+  }
+}
+
+/**
+ * 把卡片原文写回系统剪贴板。
+ * macOS 版点卡片就是「复制回原文」，Windows 这边之前只画了个角标，实际没写，
+ * 现在补上：文字卡写文字，链接卡写网址；图片卡暂不处理。
+ */
+function copyItemToClipboard(it) {
+  const text = it.text || it.url;
+  if (!text) return;
+  if (isNative) tauriInvoke('copy_text', { text }).catch(() => {});
+  else if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+}
+
 function applyHover(mx, my) {
   const hit = hitTest(line, mx, my);
   const id = hit ? hit.id : null;
@@ -183,6 +233,19 @@ function applyHover(mx, my) {
     hoverId = id;
     for (const it of line.items) {
       it.hoverScale.target = it.id === id ? 1.035 : 1;
+    }
+    if (isNative) {
+      tauriInvoke('js_log', { msg: `hover id=${id} hit=${!!hit} kind=${hit && hit.kind}` }).catch(() => {});
+    }
+    if (hit) {
+      // 预览生成失败不该连带把悬停也搞坏，单独兜住
+      try {
+        ensurePreview(hit);
+        if (isNative) tauriInvoke('js_log', { msg: `preview ok=${!!hit.preview}` }).catch(() => {});
+      } catch (err) {
+        if (isNative) tauriInvoke('js_log', { msg: 'preview fail: ' + err }).catch(() => {});
+      }
+      showLine();
     }
   }
   canvas.style.cursor = id ? 'pointer' : 'default';
@@ -212,6 +275,7 @@ function handleClick(mx, my) {
     line.drop(hit.id);
   } else {
     line.copy(hit.id);
+    copyItemToClipboard(hit);
   }
 }
 
@@ -290,8 +354,21 @@ if (isNative) {
       cursorSeen = true;
       tauriInvoke('js_log', { msg: `first cursor ${x.toFixed(0)},${y.toFixed(0)}` }).catch(() => {});
     }
+    lastCursor = { x, y };
+    // 指针贴到屏幕顶部就把线叫出来（macOS 版的 hot zone 同一套逻辑）
+    if (y <= line.layout.panelHeight + 24) showLine();
     applyHover(x, y);
   }).catch((err) => tauriInvoke('js_log', { msg: 'listen cursor failed: ' + err }));
+
+  // 告诉原生侧监听已就绪，剪贴板内容从现在开始投递
+  tauriInvoke('frontend_ready').catch(() => {});
+
+  // 托盘菜单里的「一直显示」：状态存在 Rust 侧，切换后通知这边
+  listen('always-changed', (e) => {
+    alwaysShown = !!e.payload;
+    if (alwaysShown) showLine();
+    else lastActive = 0;
+  });
 
   // 点击由 Rust 轮询鼠标左键后发来：窗口不激活，DOM 的 click 收不到。
   listen('card-click', (e) => {
@@ -300,6 +377,7 @@ if (isNative) {
   });
   // 剪贴板新内容
   listen('clip', (e) => {
+    showLine();
     const p = e.payload || {};
     if (p.kind === 'text') addClipText(p.text);
     else if (p.kind === 'link') addClipText(p.url);
@@ -362,6 +440,20 @@ if (params.get('demo') === 'overflow') {
 // 无头浏览器截图必须用它，否则拍到的永远是"刚挂上还没站稳"的瞬间。
 const settle = Number(params.get('settle') || 0);
 if (settle > 0) line.advance(settle);
+
+// 原生模式：读一次「一直显示」状态决定初始是否放下线。
+// 默认关闭 = 只有复制的时候才显示，启动时线是收着的（和 macOS 版一致）。
+if (isNative) {
+  alwaysShown = await tauriInvoke('always_mode').catch(() => false);
+  tauriInvoke('js_log', { msg: `boot always=${alwaysShown}` }).catch(() => {});
+  if (alwaysShown) {
+    reveal = 1;
+    revealTarget = 1;
+  } else {
+    reveal = 0;
+    revealTarget = 0;
+  }
+}
 
 // 原生模式：窗口默认整窗点击穿透，不挡住桌面和下面程序的点击。
 // 等第二阶段接上「指针是否在某张卡上」的轮询后，再按需临时取消穿透。

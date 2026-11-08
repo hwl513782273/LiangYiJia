@@ -334,6 +334,34 @@ export function render(ctx, line, opts) {
     ctx.restore();
   }
 
+  // 悬停放大预览：把这张卡放大显示全文（文字卡/链接卡）或原图（图片卡）。
+  // 对应 macOS 版悬停时弹出的那一层 —— 线上卡片为了排版只放得下摘要，
+  // 想看全了就得靠这一层放大。
+  const hovered = hoverId == null ? null : line.items.find((i) => i.id === hoverId);
+  if (hovered && hovered.preview) {
+    // 预览图自带缩放系数：文字卡/链接卡按 2 倍渲染，图片卡是原始像素
+    const pv = hovered.preview;
+    const pw = pv.img.width / pv.scale;
+    const ph = pv.img.height / pv.scale;
+    const maxH = Math.max(160, h - 24);
+    const k = Math.min(1.55, maxH / ph, (w - 24) / pw);
+    const dw = pw * k;
+    const dh = ph * k;
+    const px = clamp(hovered.px.value - dw / 2, 12, Math.max(12, w - dw - 12));
+    const py = clamp(14, 8, Math.max(8, h - dh - 8));
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.34)';
+    ctx.shadowBlur = 26;
+    ctx.shadowOffsetY = 12;
+    roundRectPath(ctx, px, py, dw, dh, 12);
+    ctx.fillStyle = dark ? '#1E1E20' : '#FFFFFF';
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.drawImage(pv.img, px, py, dw, dh);
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 

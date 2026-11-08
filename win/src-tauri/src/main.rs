@@ -32,6 +32,15 @@ static CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
 /// 剪贴板内容的指纹，用来判断「变了没有」。
 static CLIP_HASH: AtomicU64 = AtomicU64::new(0);
 
+/// 「一直显示」开关：true = 线常驻；false = 只有复制内容时才滑下来，过几秒收回。
+/// 和 macOS 版菜单里那个开关同一语义。前端启动时读一次，之后靠事件同步。
+static ALWAYS_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// 前端是否已经注册好事件监听。
+/// 剪贴板线程必须等它变 true 才开始读剪贴板 —— 否则启动那一刻的内容会在
+/// 页面还没准备好的时候被 emit 掉，事件丢掉、卡片也就没了（实测踩过）。
+static FRONTEND_READY: AtomicBool = AtomicBool::new(false);
+
 /// 窗口左上角的物理坐标与缩放系数。
 /// 启动时算一次存下来：光标线程每秒要跑 60 圈，如果每圈都去问系统窗口位置，
 /// 循环会被拖慢到几十毫秒一轮，短促的点击就被漏掉了（实测过）。
@@ -173,6 +182,30 @@ fn set_hit_rects(rects: Vec<[f64; 4]>) {
     }
 }
 
+/// 把卡片原文写回系统剪贴板（对应 macOS 版「点卡片复制回原文」）。
+///
+/// 注意：写完之后要顺手更新指纹，否则剪贴板监听会把它当成「新内容」，
+/// 同一段字会被挂成第二张卡。
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text.clone()).map_err(|e| e.to_string())?;
+    CLIP_HASH.store(fnv(text.as_bytes()), Ordering::Relaxed);
+    Ok(())
+}
+
+/// 前端注册完监听后调一次，通知原生侧「可以开始投递事件了」。
+#[tauri::command]
+fn frontend_ready() {
+    FRONTEND_READY.store(true, Ordering::Relaxed);
+}
+
+/// 前端启动时问一次「一直显示」当前是开还是关。
+#[tauri::command]
+fn always_mode() -> bool {
+    ALWAYS_SHOWN.load(Ordering::Relaxed)
+}
+
 /// 开发期开关：带环境变量 LIANGYIJIA_DEMO=1 启动时，前端会塞几张示例卡片。
 #[tauri::command]
 fn demo_mode() -> bool {
@@ -182,7 +215,11 @@ fn demo_mode() -> bool {
 /// 前端写日志用。Windows 上开不了 DevTools，前端出问题时只能靠这条路把信息带出来。
 #[tauri::command]
 fn js_log(msg: String) {
-    log_line(&format!("js: {msg}"));
+    // 只有开了 LIANGYIJIA_DEBUG 才落盘：这些是排查用的逐次记录，
+    // 正常使用不该往临时文件里不停追加（悬停每次变化都会写一条）。
+    if debug_on() {
+        log_line(&format!("js: {msg}"));
+    }
 }
 
 #[tauri::command]
@@ -196,6 +233,9 @@ fn main() {
             set_click_through,
             set_hit_rects,
             js_log,
+            copy_text,
+            frontend_ready,
+            always_mode,
             demo_mode,
             quit_app
         ])
@@ -249,19 +289,36 @@ fn main() {
 
             // ---- 托盘：没有它这个应用只能进任务管理器才能退出 ----
             {
-                use tauri::menu::{Menu, MenuItem};
+                use tauri::menu::{CheckMenuItem, Menu, MenuItem};
                 use tauri::tray::TrayIconBuilder;
 
                 let show = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
+                // 勾选项：勾上 = 线常驻不收；不勾 = 只有复制内容时才出现
+                let always = CheckMenuItem::with_id(
+                    app,
+                    "always",
+                    "一直显示",
+                    true,
+                    ALWAYS_SHOWN.load(Ordering::Relaxed),
+                    None::<&str>,
+                )?;
+                let always_item = always.clone();
                 let quit = MenuItem::with_id(app, "quit", "退出晾衣架", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show, &quit])?;
+                let menu = Menu::with_items(app, &[&show, &always, &quit])?;
 
                 let mut builder = TrayIconBuilder::with_id("main")
                     .tooltip("晾衣架")
                     .menu(&menu)
                     .show_menu_on_left_click(true)
-                    .on_menu_event(|app, event| match event.id.as_ref() {
+                    .on_menu_event(move |app, event| match event.id.as_ref() {
                         "quit" => app.exit(0),
+                        "always" => {
+                            // 勾选状态由我们自己维护，避免菜单和前端各记一份、越走越偏
+                            let now = !ALWAYS_SHOWN.load(Ordering::Relaxed);
+                            ALWAYS_SHOWN.store(now, Ordering::Relaxed);
+                            let _ = always_item.set_checked(now);
+                            let _ = app.emit("always-changed", now);
+                        }
                         "show" => {
                             if let Some(w) = app.get_webview_window("line") {
                                 let visible = w.is_visible().unwrap_or(true);
@@ -299,6 +356,7 @@ fn spawn_cursor_watcher(app: tauri::AppHandle) {
         let mut last_log = std::time::Instant::now();
         let mut last_down = false;
         let mut last_pos: Option<(f64, f64)> = None;
+        let mut last_emit = std::time::Instant::now();
         loop {
             // 16ms ≈ 60Hz：既够跟手，也能采到一次正常速度的点击（按住通常 40ms 以上）
             std::thread::sleep(Duration::from_millis(16));
@@ -352,7 +410,12 @@ fn spawn_cursor_watcher(app: tauri::AppHandle) {
                 // 前端要用指针位置做悬停放大和「叉号」提示。
                 // 只有位置真的动了（或命中状态翻转）才发，否则每秒 60 次 IPC 会把循环拖慢。
                 let moved = last_pos.map_or(true, |(px, py)| (px - lx).abs() >= 1.0 || (py - ly).abs() >= 1.0);
-                if moved || last != Some(on_card) {
+                // 心跳：鼠标长时间不动时也每 500ms 发一次。
+                // 一是页面注册监听可能晚于第一次事件（实测踩过，之后就再也收不到），
+                // 二是前端要按「指针是否停在热区」每帧决定放不放下线，得有个新鲜的位置。
+                let beat = last_emit.elapsed() >= Duration::from_millis(500);
+                if moved || last != Some(on_card) || beat {
+                    last_emit = std::time::Instant::now();
                     last_pos = Some((lx, ly));
                     let _ = app.emit("cursor", (lx, ly, on_card));
                 }
@@ -408,6 +471,11 @@ fn spawn_clipboard_watcher(app: tauri::AppHandle) {
 
         loop {
             std::thread::sleep(Duration::from_millis(600));
+
+            // 前端还没准备好就先不读：读了会把指纹推上去，那条内容就再也不会被投递。
+            if !FRONTEND_READY.load(Ordering::Relaxed) {
+                continue;
+            }
 
             // ---- 文字 / 链接 ----
             if let Ok(text) = clipboard.get_text() {
