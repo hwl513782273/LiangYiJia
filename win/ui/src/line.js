@@ -82,6 +82,9 @@ export class Line {
     return this.items.find((i) => !i.kept && !i.held);
   }
 
+  /** 一共钉住了几张。钉住的永远排在最前面，也永远不会被自动删。 */
+  get keptCount() { return this.items.filter((x) => x.kept).length; }
+
   get pinnedLead() {
     let n = 0;
     for (const i of this.items) { if (!i.kept) break; n++; }
@@ -111,48 +114,53 @@ export class Line {
     this.scrollTo(0);
     arrive(item);
 
-    if (this.liveCount > this.maxItems && this.lettingGo == null) {
-      const oldest = this.oldestLoose();
-      if (oldest) this.letGo(oldest.id);
-    }
+    this.enforceCapacity();
     return item;
   }
 
   /**
-   * 让某一张下线。
-   * 有滚动时先滚到最老那一头（让人看清要掉的是哪张），停顿、照原样掉落、
-   * 后面立刻补位、再滚回最新一头 —— 这就是"看得见的清理"。
+   * 让某一张下线：直接掉下去，后面立刻补位。
+   *
+   * 早期版本会先滚到最老那一头再掉、掉完再滚回来。实际用起来反而看不清，
+   * 而且钉住的卡片在滚动过程中也跟着动 —— 已经去掉，只保留掉落动画本身。
    */
   letGo(id) {
-    const scrolls = this.keepOnLine != null && this.items.length > this.visibleCount;
-    if (!scrolls) {
-      // 一眼看得全：最老的本来就在最前面，直接掉，但马上补位
-      this.drop(id);
-      this.sweepFallen();
-      return;
-    }
+    this.drop(id);
+    this.sweepFallen();
+  }
 
-    this.lettingGo = id;
-    // ① 滚到最老一头
-    this.scrollTo(this.layout.frontScroll(this.items.length, this.visibleCount), 0.35, easeInOut);
-    // ② 滚动走完再掉，卡片位置才对得上
-    this.after(0.42, () => {
-      const it = this.items.find((i) => i.id === id);
-      if (!it) { this.lettingGo = null; return; }
-      this.drop(id);
-      // ③ 后面那张立刻补到最前面
-      this.sweepFallen();
-      this.scroll = Math.min(this.scroll, this.layout.frontScroll(this.items.length, this.visibleCount));
-      this.lettingGo = null;
-      // ④ 掉完了滚回最新一头
-      this.after(0.9, () => {
-        this.scrollTo(0, 0.35, easeInOut);
-        if (this.liveCount > this.maxItems) {
-          const next = this.oldestLoose();
-          if (next) this.after(0.45, () => this.letGo(next.id));
-        }
-      });
-    });
+  /**
+   * 超出保留张数就删最老的「没被钉住的」。
+   * 全被钉住了就停手（宁可超一点，也不动钉住的）。
+   */
+  enforceCapacity() {
+    let guard = 0;
+    while (this.liveCount > this.maxItems && guard++ < 200) {
+      const oldest = this.oldestLoose();
+      if (!oldest) break;
+      this.letGo(oldest.id);
+    }
+  }
+
+  /**
+   * 钉住 / 取消钉住。
+   * 钉住的卡片排到线的最前面（和 macOS 版一样：插在「已钉住的最后一张」后面），
+   * 版式里 pinnedLead 会把它们锚在最前面，滚动和清理都不影响它们。
+   */
+  toggleKept(id) {
+    const i = this.items.findIndex((x) => x.id === id);
+    if (i < 0) return null;
+    const it = this.items[i];
+    this.items.splice(i, 1);
+    it.kept = !it.kept;
+    // 摘掉之后再取 keptCount：钉住就落在钉住区末尾，取消钉住就落在钉住区之后
+    this.items.splice(this.keptCount, 0, it);
+    // 位置整体变了，让它从当前位置滑过去，别瞬移
+    it.px.target = this.layout.x(
+      this.items.indexOf(it), this.items.length, this.width,
+      this.visibleCount, this.scroll, this.pinnedLead, this.keepOnLine,
+    );
+    return it.kept;
   }
 
   /**

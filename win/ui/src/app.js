@@ -12,7 +12,11 @@ const canvas = document.getElementById('line');
 const ctx = canvas.getContext('2d');
 
 const line = new Line();
-let dark = true;
+
+// 主题跟随系统（macOS 版也是跟系统外观走）。
+// 之前这里写死 true，所以不管系统是深是浅，卡片永远是黑的。
+const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+let dark = darkQuery ? darkQuery.matches : false;
 let hoverId = null;
 let reveal = 1;          // 1 = 放下，0 = 收起
 let revealTarget = 1;
@@ -200,6 +204,17 @@ function frame(now) {
 // 浏览器原型直接听 mousemove；原生模式下窗口大部分时间是点击穿透的，
 // 收不到 mousemove，改由 Rust 侧轮询系统光标后通过 'cursor' 事件送坐标过来。
 /**
+ * 应用「保留张数」。
+ * 0 = 一屏能放几张就几张；25/50/100 = 保留这么多，再多就把最老的自动删掉
+ * （掉落动画那套在 line.js 里本来就有，这里只负责把参数传进去）。
+ */
+function applyKeep(n) {
+  line.keepOnLine = n > 0 ? n : null;
+  line.resize(window.innerWidth);   // 重算 maxItems
+  showLine();
+}
+
+/**
  * 悬停预览图按需生成，生成一次就缓存。
  * 依据是卡片自己的内容：文字卡/链接卡重画一张「展开版」，图片卡直接用原图。
  */
@@ -268,18 +283,49 @@ canvas.addEventListener('mouseleave', () => {
  */
 function handleClick(mx, my) {
   clickCount += 1;
+
+  // ① 先判夹子：夹子画在卡片矩形上方，hitTest 够不到，得单独找。
+  // 点夹子 = 钉住 / 取消钉住。钉住的卡片永远排在线的最前面，自动清理也不会碰它。
+  const pegHit = line.items.find((it) => {
+    const r = line.rects.get(it.id);
+    if (!r) return false;
+    const cx = r.x + r.w / 2;
+    return Math.abs(mx - cx) <= 16 && my <= r.y + 8 && my >= r.y - 26;
+  });
+  if (isNative) {
+    const r0 = pegHit ? line.rects.get(pegHit.id) : null;
+    tauriInvoke('js_log', { msg: `click ${mx.toFixed(0)},${my.toFixed(0)} peg=${pegHit ? pegHit.id : 'none'} rect=${r0 ? Math.round(r0.x) + ',' + Math.round(r0.y) : '-'} items=${line.items.length}` }).catch(() => {});
+  }
+  if (pegHit) {
+    try {
+      const kept = line.toggleKept(pegHit.id);
+      if (isNative) tauriInvoke('js_log', { msg: `pin ${pegHit.id} -> kept=${kept} keptCount=${line.keptCount}` }).catch(() => {});
+      if (kept != null) showLine();
+    } catch (err) {
+      if (isNative) tauriInvoke('js_log', { msg: 'pin fail: ' + err }).catch(() => {});
+    }
+    return;
+  }
+
   const hit = hitTest(line, mx, my);
   if (!hit) return;
   const rect = line.rects.get(hit.id);
+
+  // ② 左上角 26×26 = 删除
   if (rect && mx < rect.x + 26 && my < rect.y + 26) {
     line.drop(hit.id);
-  } else {
-    line.copy(hit.id);
-    copyItemToClipboard(hit);
+    return;
   }
+
+  // ③ 其它位置 = 复制回剪贴板
+  line.copy(hit.id);
+  copyItemToClipboard(hit);
 }
 
 canvas.addEventListener('click', (e) => {
+  // 原生模式下不处理 DOM click：Rust 侧轮询左键已经发过 card-click，
+  // 两边都处理会让同一次点击跑两遍（钉住会立刻被自己取消，实测踩过）。
+  if (isNative) return;
   const r = canvas.getBoundingClientRect();
   handleClick(e.clientX - r.left, e.clientY - r.top);
 });
@@ -311,7 +357,10 @@ function reportHitRects() {
   const arr = [];
   for (const it of line.items) {
     const r = line.rects.get(it.id);
-    if (r) arr.push([r.x, r.y, r.w, r.h]);
+    if (!r) continue;
+    // 往上多算 22：夹子画在卡片上方，点夹子也要算「在卡片上」，
+    // 否则那一刻窗口是穿透的，点击直接落到桌面上（实测过）。
+    arr.push([r.x, r.y - 22, r.w, r.h + 22]);
   }
   const key = arr.map((a) => a.map((v) => Math.round(v)).join(',')).join(';');
   if (key === lastRectsKey) return;
@@ -363,11 +412,24 @@ if (isNative) {
   // 告诉原生侧监听已就绪，剪贴板内容从现在开始投递
   tauriInvoke('frontend_ready').catch(() => {});
 
+  // 托盘菜单里的「保留张数」
+  listen('keep-changed', (e) => applyKeep(Number(e.payload) || 0));
+
   // 托盘菜单里的「一直显示」：状态存在 Rust 侧，切换后通知这边
   listen('always-changed', (e) => {
     alwaysShown = !!e.payload;
     if (alwaysShown) showLine();
     else lastActive = 0;
+  });
+
+  // 右键点卡片 = 钉住 / 取消钉住（对应 macOS 版的右键菜单）。
+  // 钉住的卡片固定在线的最前面，永远不会被自动清理掉。
+  listen('card-right-click', (e) => {
+    const [x, y] = e.payload;
+    const hit = hitTest(line, x, y);
+    if (!hit) return;
+    const kept = line.toggleKept(hit.id);
+    if (kept != null) showLine();
   });
 
   // 点击由 Rust 轮询鼠标左键后发来：窗口不激活，DOM 的 click 收不到。
@@ -382,6 +444,23 @@ if (isNative) {
     if (p.kind === 'text') addClipText(p.text);
     else if (p.kind === 'link') addClipText(p.url);
     else if (p.kind === 'image') addClipImage(p.data);
+  });
+}
+
+// 系统外观变了就重画文字卡/链接卡（它们是预先渲染成图片的，不重画不会变色）
+if (darkQuery) {
+  darkQuery.addEventListener('change', (e) => {
+    dark = e.matches;
+    for (const it of line.items) {
+      if (it.kind === 'text') {
+        it.image = makeTextCard({ text: it.text, source: it.source, dark });
+        it.preview = null;
+      }
+      if (it.kind === 'link') {
+        it.image = makeLinkCard({ url: it.url, title: it.title, source: it.source, dark });
+        it.preview = null;
+      }
+    }
   });
 }
 
@@ -444,6 +523,8 @@ if (settle > 0) line.advance(settle);
 // 原生模式：读一次「一直显示」状态决定初始是否放下线。
 // 默认关闭 = 只有复制的时候才显示，启动时线是收着的（和 macOS 版一致）。
 if (isNative) {
+  // 保留张数：读到就用上（必须在 resize 之后再设，否则 maxItems 会被重算覆盖）
+  applyKeep(await tauriInvoke('keep_mode').catch(() => 0));
   alwaysShown = await tauriInvoke('always_mode').catch(() => false);
   tauriInvoke('js_log', { msg: `boot always=${alwaysShown}` }).catch(() => {});
   if (alwaysShown) {

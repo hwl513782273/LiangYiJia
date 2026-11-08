@@ -287,7 +287,13 @@ export function render(ctx, line, opts) {
 
   line.rects.clear();
 
-  line.items.forEach((item, index) => {
+  // 普通卡先画、钉住的最后画（对应 macOS 版 zIndex：钉住的在上一层）
+  const drawOrder = [];
+  for (let i = 0; i < line.items.length; i++) if (!line.items[i].kept) drawOrder.push(i);
+  for (let i = 0; i < line.items.length; i++) if (line.items[i].kept) drawOrder.push(i);
+
+  drawOrder.forEach((index) => {
+    const item = line.items[index];
     // 用弹簧当前位置，不用版式算出来的目标值：补位才是滑过去的
     const x = item.px.value;
     const ropeY = L.ropeY(x, w);
@@ -335,20 +341,28 @@ export function render(ctx, line, opts) {
   }
 
   // 悬停放大预览：把这张卡放大显示全文（文字卡/链接卡）或原图（图片卡）。
-  // 对应 macOS 版悬停时弹出的那一层 —— 线上卡片为了排版只放得下摘要，
-  // 想看全了就得靠这一层放大。
+  // 位置在「这张卡片的正下方」，不能盖住绳子和其他卡片 —— 上面那条带子是常驻的，
+  // 一盖就看不见自己挂了什么了。尺寸也克制：最多 320×280，不再整屏糊一张。
   const hovered = hoverId == null ? null : line.items.find((i) => i.id === hoverId);
   if (hovered && hovered.preview) {
     // 预览图自带缩放系数：文字卡/链接卡按 2 倍渲染，图片卡是原始像素
     const pv = hovered.preview;
     const pw = pv.img.width / pv.scale;
     const ph = pv.img.height / pv.scale;
-    const maxH = Math.max(160, h - 24);
-    const k = Math.min(1.55, maxH / ph, (w - 24) / pw);
+
+    const MAX_W = 320;
+    const MAX_H = 280;
+    const k = Math.min(1, MAX_W / pw, MAX_H / ph, (w - 24) / pw);
     const dw = pw * k;
     const dh = ph * k;
-    const px = clamp(hovered.px.value - dw / 2, 12, Math.max(12, w - dw - 12));
-    const py = clamp(14, 8, Math.max(8, h - dh - 8));
+
+    // 贴在这张卡的下沿往下 10px；卡片矩形由 render 回填在 line.rects 里
+    const own = line.rects.get(hovered.id);
+    const cardBottom = own ? own.y + own.h : 130;
+    let px = clamp((own ? own.x + own.w / 2 : hovered.px.value) - dw / 2, 12, Math.max(12, w - dw - 12));
+    let py = cardBottom + 10;
+    // 窗口不够高就往上收，但绝不上浮到盖住绳子和卡片
+    if (py + dh > h - 8) py = Math.max(cardBottom + 10 - (py + dh - (h - 8)), h - dh - 8);
 
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.34)';

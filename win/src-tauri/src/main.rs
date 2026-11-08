@@ -6,7 +6,7 @@
 // 调用时机：开机自启或用户双击 exe 时由系统拉起，之后常驻。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -32,9 +32,48 @@ static CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
 /// 剪贴板内容的指纹，用来判断「变了没有」。
 static CLIP_HASH: AtomicU64 = AtomicU64::new(0);
 
+/// 设置文件路径。macOS 版用 UserDefaults 保存这两个开关，Windows 这边用一个小文本文件。
+fn settings_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var("APPDATA").ok()?;
+    let dir = std::path::Path::new(&base).join("liangyijia");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("settings.txt"))
+}
+
+/// 读设置。文件不存在就用默认值（保留一屏、只有复制时显示）。
+fn load_settings() {
+    let Some(path) = settings_path() else { return };
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("keep=") {
+            if let Ok(n) = v.trim().parse::<u32>() {
+                KEEP_COUNT.store(n, Ordering::Relaxed);
+            }
+        }
+        if let Some(v) = line.strip_prefix("always=") {
+            ALWAYS_SHOWN.store(v.trim() == "1", Ordering::Relaxed);
+        }
+    }
+}
+
+/// 存设置。写失败不影响使用，顶多下次启动回到默认。
+fn save_settings() {
+    let Some(path) = settings_path() else { return };
+    let body = format!(
+        "keep={}\nalways={}\n",
+        KEEP_COUNT.load(Ordering::Relaxed),
+        if ALWAYS_SHOWN.load(Ordering::Relaxed) { 1 } else { 0 }
+    );
+    let _ = std::fs::write(path, body);
+}
+
 /// 「一直显示」开关：true = 线常驻；false = 只有复制内容时才滑下来，过几秒收回。
 /// 和 macOS 版菜单里那个开关同一语义。前端启动时读一次，之后靠事件同步。
 static ALWAYS_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// 保留张数：0 = 一屏能放几张就几张；25/50/100 = 保留这么多，超出就把最老的自动删掉。
+/// 对应 macOS 版菜单里的「保留 25 / 50 / 100」。
+static KEEP_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// 前端是否已经注册好事件监听。
 /// 剪贴板线程必须等它变 true 才开始读剪贴板 —— 否则启动那一刻的内容会在
@@ -131,6 +170,12 @@ mod platform {
         unsafe { (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 }
     }
 
+    /// 鼠标右键是否按下。用来做「钉住 / 取消钉住」（对应 macOS 版的右键菜单）。
+    pub fn right_button_down() -> bool {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RBUTTON;
+        unsafe { (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0 }
+    }
+
     /// 系统光标的物理坐标。屏幕左上角是 (0,0)。
     pub fn cursor_pos() -> (i32, i32) {
         let mut p = POINT { x: 0, y: 0 };
@@ -200,6 +245,12 @@ fn frontend_ready() {
     FRONTEND_READY.store(true, Ordering::Relaxed);
 }
 
+/// 前端启动时问一次当前保留张数（0 = 一屏）。
+#[tauri::command]
+fn keep_mode() -> u32 {
+    KEEP_COUNT.load(Ordering::Relaxed)
+}
+
 /// 前端启动时问一次「一直显示」当前是开还是关。
 #[tauri::command]
 fn always_mode() -> bool {
@@ -228,6 +279,12 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 fn main() {
+    // WebView2 会把打包进去的前端资源缓存到磁盘，改完界面重新编译后仍加载旧版本
+    // （实测：exe 已经是新的、菜单都变了，但页面还是上一次的 JS）。资源本来就在 exe 里，
+    // 关掉磁盘缓存既不会变慢，也不会再出现「改了没生效」这种假象。
+    #[cfg(target_os = "windows")]
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disk-cache-size=1");
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             set_click_through,
@@ -235,11 +292,14 @@ fn main() {
             js_log,
             copy_text,
             frontend_ready,
+            keep_mode,
             always_mode,
             demo_mode,
             quit_app
         ])
         .setup(|app| {
+            load_settings();
+
             let window = app
                 .get_webview_window("line")
                 .expect("窗口 line 必须在 tauri.conf.json 里定义");
@@ -289,10 +349,20 @@ fn main() {
 
             // ---- 托盘：没有它这个应用只能进任务管理器才能退出 ----
             {
-                use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+                use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
                 use tauri::tray::TrayIconBuilder;
 
                 let show = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
+
+                // 保留张数：超出就自动把最老的那张掉下去（界面层的掉落动画早就有，
+                // 之前缺的只是这个入口和参数传递）。
+                let cur = KEEP_COUNT.load(Ordering::Relaxed);
+                let k0 = CheckMenuItem::with_id(app, "keep0", "一屏（默认）", true, cur == 0, None::<&str>)?;
+                let k25 = CheckMenuItem::with_id(app, "keep25", "保留 25 张", true, cur == 25, None::<&str>)?;
+                let k50 = CheckMenuItem::with_id(app, "keep50", "保留 50 张", true, cur == 50, None::<&str>)?;
+                let k100 = CheckMenuItem::with_id(app, "keep100", "保留 100 张", true, cur == 100, None::<&str>)?;
+                let keep_sub = Submenu::with_items(app, "保留张数", true, &[&k0, &k25, &k50, &k100])?;
+                let keep_items = [k0, k25, k50, k100];
                 // 勾选项：勾上 = 线常驻不收；不勾 = 只有复制内容时才出现
                 let always = CheckMenuItem::with_id(
                     app,
@@ -304,7 +374,7 @@ fn main() {
                 )?;
                 let always_item = always.clone();
                 let quit = MenuItem::with_id(app, "quit", "退出晾衣架", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show, &always, &quit])?;
+                let menu = Menu::with_items(app, &[&show, &keep_sub, &always, &quit])?;
 
                 let mut builder = TrayIconBuilder::with_id("main")
                     .tooltip("晾衣架")
@@ -312,11 +382,27 @@ fn main() {
                     .show_menu_on_left_click(true)
                     .on_menu_event(move |app, event| match event.id.as_ref() {
                         "quit" => app.exit(0),
+                        "keep0" | "keep25" | "keep50" | "keep100" => {
+                            let (value, idx) = match event.id.as_ref() {
+                                "keep0" => (0u32, 0usize),
+                                "keep25" => (25, 1),
+                                "keep50" => (50, 2),
+                                _ => (100, 3),
+                            };
+                            KEEP_COUNT.store(value, Ordering::Relaxed);
+                            // 四个勾选项互斥，状态由我们自己维护
+                            for (i, item) in keep_items.iter().enumerate() {
+                                let _ = item.set_checked(i == idx);
+                            }
+                            save_settings();
+                            let _ = app.emit("keep-changed", value);
+                        }
                         "always" => {
                             // 勾选状态由我们自己维护，避免菜单和前端各记一份、越走越偏
                             let now = !ALWAYS_SHOWN.load(Ordering::Relaxed);
                             ALWAYS_SHOWN.store(now, Ordering::Relaxed);
                             let _ = always_item.set_checked(now);
+                            save_settings();
                             let _ = app.emit("always-changed", now);
                         }
                         "show" => {
@@ -355,6 +441,7 @@ fn spawn_cursor_watcher(app: tauri::AppHandle) {
         let mut last: Option<bool> = None;
         let mut last_log = std::time::Instant::now();
         let mut last_down = false;
+        let mut last_rdown = false;
         let mut last_pos: Option<(f64, f64)> = None;
         let mut last_emit = std::time::Instant::now();
         loop {
@@ -386,6 +473,13 @@ fn spawn_cursor_watcher(app: tauri::AppHandle) {
                             && ly <= r[1] + r[3] + HIT_SLOP
                     })
                 };
+
+                // 右键按下沿：钉住 / 取消钉住
+                let rdown = platform::right_button_down();
+                if rdown && !last_rdown && on_card {
+                    let _ = app.emit("card-right-click", (lx, ly));
+                }
+                last_rdown = rdown;
 
                 // 左键按下沿：从「没按」变成「按下」的那一刻，且指针在卡片上
                 let down = platform::left_button_down();
