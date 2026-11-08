@@ -1,7 +1,7 @@
 {
   "name": "liangyijia-win",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "LiangYiJia for Windows - screenshots, text, links and images hang on a line at the top of the screen",
   "scripts": {
     "tauri": "tauri",

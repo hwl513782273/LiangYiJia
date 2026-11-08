@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
 APP="build/晾衣架.app"
-VERSION="1.0.0"
+VERSION="1.1.0"
 # 最低支持的 macOS。12 = Monterey：既是 Intel Mac 还能装的系统，也覆盖 Apple Silicon 全部机型。
 # 改这个要同时改 Package.swift 的 platforms 与 Info.plist 的 LSMinimumSystemVersion。
 MIN_MACOS="12.0"

@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP="build/晾衣架.app"
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 MIN_MACOS="12"
 OUT_DIR="dist"
 NAME="${MIN_MACOS}-LiangYiJia-${VERSION}-universal.dmg"
