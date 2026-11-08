@@ -37,14 +37,19 @@ final class LinePanel: NSPanel {
 
     /// The line hangs on the screen you are using, which is the one with the
     /// pointer: that is where you just took the screenshot.
+    ///
+    /// 只有「显示在 = 跟随鼠标」时才会被用上；钉住某块屏之后走 ScreenChoice。
     static func screenUnderPointer() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
         return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main ?? NSScreen.screens.first
     }
 
+    /// 把窗口放到线该待的那块屏上。
+    /// - Parameter screen: 调用方希望的屏（比如截图所在那块）。
+    ///   只有「跟随鼠标」时才算数；用户在菜单里钉住了某块屏，这里一律听设置。
     func placeOnScreen(_ screen: NSScreen? = nil) {
-        guard let visible = (screen ?? LinePanel.screenUnderPointer())?.visibleFrame else { return }
+        guard let visible = ScreenChoice.target(preferring: screen)?.visibleFrame else { return }
         let target = NSRect(x: visible.minX, y: visible.maxY - Layout.panelHeight,
                             width: visible.width, height: Layout.panelHeight)
         if frame != target { setFrame(target, display: true) }

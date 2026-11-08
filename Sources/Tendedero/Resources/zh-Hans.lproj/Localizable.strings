@@ -76,3 +76,11 @@
 "Hang back" = "放回绳上";
 "Hang everything back" = "全部放回绳上";
 "Actual Size" = "实际大小";
+
+/* Which display the line hangs on */
+"Show on" = "显示在";
+"Follow the pointer" = "跟随鼠标指针";
+"Main display" = "主显示器";
+"The line moves to whichever screen the pointer is on" = "鼠标在哪块屏，线就跟到哪块屏";
+"The line stays on the display with the menu bar" = "线固定在带菜单栏的那块屏上";
+"Display %d" = "显示器 %d";

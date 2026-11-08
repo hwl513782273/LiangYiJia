@@ -96,6 +96,7 @@ hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov 
 | 容量 | 同时显示几张 | 按屏幕宽度自动算 `(屏宽 - 200) ÷ 174`，上限 12、下限 3；1920 宽的屏 = 9 张 |
 | 容量 | 保留上限 | 默认等于可显示张数，也可固定 25 / 50 / 100 张；超出时最旧的一张移入废纸篓 |
 | 容量 | 回看更早的 | 两指滑动或滚轮；只有保留数大于可显示张数时才有前后可翻 |
+| 多屏 | 显示在哪块屏 | 菜单「显示在」：跟随鼠标指针 / 主显示器 / 逐一指定某块屏。按显示器 UUID 记住，外接屏拔掉回落主屏、插回来自动回去；钉住后新内容不会把线拽到别的屏 |
 
 ### 差异化亮点
 
@@ -177,6 +178,7 @@ Implementation notes and the pitfalls behind each decision are in [docs/CHANGES.
 | Capacity | Visible cards | Computed from screen width, `(width - 200) ÷ 174`, clamped to 3–12; a 1920-wide screen shows 9 |
 | Capacity | Retention limit | Defaults to the visible count, or pin it to 25 / 50 / 100; the oldest is moved to the Trash when over the limit |
 | Capacity | Scrolling back | Two-finger scroll or the wheel; only meaningful when retention exceeds the visible count |
+| Displays | Which screen it hangs on | Menu “Show on”: follow the pointer / the main display / one specific display. Remembered by display UUID, so unplugging falls back to the main display and plugging back in returns automatically; once pinned, new items no longer drag the line to another screen |
 
 ### Why this tool
 

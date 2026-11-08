@@ -78,3 +78,11 @@
 "Hang back" = "Hang back";
 "Hang everything back" = "Hang everything back";
 "Actual Size" = "Actual Size";
+
+/* Which display the line hangs on */
+"Show on" = "Show on";
+"Follow the pointer" = "Follow the pointer";
+"Main display" = "Main display";
+"The line moves to whichever screen the pointer is on" = "The line moves to whichever screen the pointer is on";
+"The line stays on the display with the menu bar" = "The line stays on the display with the menu bar";
+"Display %d" = "Display %d";

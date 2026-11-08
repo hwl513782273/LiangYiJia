@@ -169,8 +169,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.panel.placeOnScreen()
-                self?.updateCapacity()
+                self?.reflowAfterScreenChange()
+                // 通知到达的瞬间 NSScreen.screens 有时还没更新完（刚插上的屏还不在列表里）。
+                // 稍后补一遍，钉住的外接屏插回来时才能可靠地把线搬回去。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    self?.reflowAfterScreenChange()
+                }
             }
         }
 
@@ -350,22 +354,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !line.items.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL && !$0.falling })
         else { return }
         let from = captureRect(of: url)
-        let screen = from.flatMap { from in
+        // 截图落在哪块屏上：只有「跟随鼠标」时它会决定线去哪个屏。
+        let captureScreen = from.flatMap { from in
             NSScreen.screens.first { NSMouseInRect(CGPoint(x: from.midX, y: from.midY), $0.frame, false) }
         }
         // Every capture brings the line down before it hangs, on the screen it
         // was taken on. On a full line the oldest photo then falls in view as
         // the new one flies in.
-        comeDown(on: screen)
+        comeDown(on: captureScreen)
+        // 钉在别的屏上时，截图坐标不落在线的这块屏里：跨屏飞不过去，
+        // 所以不做飞行动画，卡片直接在线上出现，靠线闪一下提示有新的。
+        let canFly = from != nil && ScreenChoice.isSame(panel.screen, captureScreen)
         // A screenshot macOS took already played its shutter, so it hangs
         // without a chime of its own. Copied images and watched folders,
         // which come with no sound, keep it.
-        guard let id = line.hang(url, quietly: from != nil, flying: from != nil) else {
+        guard let id = line.hang(url, quietly: from != nil, flying: canFly) else {
             // Nothing hung after all, so an empty line goes away again.
             itemsChanged()
             return
         }
-        guard let from else { return }
+        guard let from, canFly else { return }
         // Let the line come down and lay out before measuring the landing spot.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
             self?.fly(id, from: from)
@@ -382,6 +390,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Sharp enough while it starts out at the captured size, which a
         // full Retina screen would otherwise take at full resolution.
+        // 起点不在线所在的那块屏上（线被钉在别的屏）：跨屏的飞行动画画不出来，
+        // 直接从线上出现。
+        guard from.intersects(screen.frame) else {
+            line.land(id)
+            return
+        }
         let pixels = Int(max(from.width, from.height) * screen.backingScaleFactor)
         guard let image = makeThumbnail(item.url, maxPixels: min(1500, max(400, pixels)))?
             .cgImage(forProposedRect: nil, context: nil, hints: nil) else {
@@ -559,6 +573,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusIcon()
     }
 
+    /// 菜单里改了「显示在哪块屏」之后立刻生效。
+    /// 调用时机：菜单里点「跟随鼠标 / 主显示器 / 某块屏」。
+    ///
+    /// 一共做三件事：把窗口搬到新屏、按新屏的宽度重算能挂几张、催一次重绘。
+    /// 最后把线放下来露一眼——不然点了菜单，看不出线到底搬没搬过去。
+    private func setScreenChoice(_ choice: ScreenChoice.Mode) {
+        guard choice != ScreenChoice.mode else { return }
+        ScreenChoice.mode = choice
+        panel.placeOnScreen()
+        updateCapacity()
+        // visibleCount 是普通属性，不会自己发通知；换屏后必须手动催一次重绘，
+        // 否则卡片还按旧屏「能挂几张」排在原来的位置。
+        line.objectWillChange.send()
+        wanted = true
+        refresh()
+        reveal(peekFor: 2.5)
+    }
+
     private func startMouseTracking() {
         guard mouseTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
@@ -649,8 +681,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 hotZoneSince = since
                 if now.timeIntervalSince(since) >= Self.revealDelay {
                     hotZoneSince = nil
-                    if panel.screen != screen {
-                        panel.placeOnScreen()
+                    // 钉住某块屏时不跟着指针搬家：用户在别的屏的菜单栏停留，
+                    // 线也不该跑过去，否则「钉住」等于没钉。
+                    if !ScreenChoice.isSame(panel.screen, screen), !ScreenChoice.isPinned {
+                        panel.placeOnScreen(screen)
                         updateCapacity()
                     }
                     refresh()
@@ -995,6 +1029,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         line.maxItems = max(fits, Line.keepOnLine ?? fits)
     }
 
+    /// 显示器接上、拔掉、改分辨率之后，把线重新放到该在的屏上，并按新宽度重排。
+    /// 调用时机：didChangeScreenParametersNotification（立即一次，0.4 秒后补一次）。
+    ///
+    /// 钉住的那块被拔掉时，ScreenChoice 会回落到主显示器；插回来时再自动搬回去，
+    /// 全程不改用户设置——所以用户不该看到「设置被悄悄换掉了」。
+    private func reflowAfterScreenChange() {
+        panel.placeOnScreen()
+        updateCapacity()
+        // 同 setScreenChoice：visibleCount 不发通知，改完要手动催重绘
+        line.objectWillChange.send()
+        refresh()
+    }
+
     // MARK: Menu bar
 
     private func setUpStatusItem() {
@@ -1048,6 +1095,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alwaysItem.state = Self.alwaysShown ? .on : .off
         alwaysItem.toolTip = L("The line stays on screen and never tucks away")
         menu.addItem(alwaysItem)
+
+        // 显示在哪块屏。只有一块屏的时候不显示这一项——没有可选的东西，
+        // 多一层子菜单只是噪音。
+        if NSScreen.screens.count > 1 || ScreenChoice.isPinned {
+            let whereItem = NSMenuItem(title: L("Show on"), action: nil, keyEquivalent: "")
+            let places = NSMenu()
+            let follow = ClosureMenuItem(L("Follow the pointer")) { [weak self] in
+                self?.setScreenChoice(.pointer)
+            }
+            follow.state = ScreenChoice.mode == .pointer ? .on : .off
+            follow.toolTip = L("The line moves to whichever screen the pointer is on")
+            places.addItem(follow)
+            let main = ClosureMenuItem(L("Main display")) { [weak self] in
+                self?.setScreenChoice(.main)
+            }
+            main.state = ScreenChoice.mode == .main ? .on : .off
+            main.toolTip = L("The line stays on the display with the menu bar")
+            places.addItem(main)
+            places.addItem(.separator())
+            for entry in ScreenChoice.menuEntries() {
+                guard let id = ScreenChoice.stableID(for: entry.screen) else { continue }
+                // 名字直接来自系统（localizedName），已经本地化，不再套 L()
+                let item = ClosureMenuItem(entry.title) { [weak self] in
+                    self?.setScreenChoice(.display(id))
+                }
+                item.state = ScreenChoice.mode == .display(id) ? .on : .off
+                places.addItem(item)
+            }
+            whereItem.submenu = places
+            menu.addItem(whereItem)
+        }
 
         let clearItem = ClosureMenuItem(L("Take everything down")) { [weak self] in
             self?.line.clear()
