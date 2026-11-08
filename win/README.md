@@ -88,6 +88,17 @@ scripts/make-dmg.sh 1.0.0         # 打成 dist/12-LiangYiJia-1.0.0-universal.dm
 
 Windows 那边是「免安装 exe + `install.cmd`」打包成 zip（NSIS 安装器在这台 ARM64 虚拟机上编不出来，原因见下面「还没做」）。
 
+要 **x64** 的 exe（本机是 ARM64 的 Windows，需要交叉编译）：
+
+```powershell
+rustup target add x86_64-pc-windows-msvc
+npx tauri build --no-bundle --target x86_64-pc-windows-msvc
+# 产物：src-tauri\target\x86_64-pc-windows-msvc\release\liangyijia.exe
+```
+
+前提是 MSVC 里有 x64 的库（`VC\Tools\MSVC\*\lib\x64`）—— 本机 VM 里是有的。
+实测这份 x64 exe 在 ARM64 Windows 上通过模拟也能正常跑（绳子 / 卡片 / 透明底都正常）。
+
 只想看界面、不编 Rust（在任意系统上）：
 
 ```bash
