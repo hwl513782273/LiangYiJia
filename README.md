@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS%2014%2B-black" alt="platform">
-  <img src="https://img.shields.io/badge/arch-arm64-blue" alt="arch">
+  <img src="https://img.shields.io/badge/platform-macOS%2012%2B-black" alt="platform">
+  <img src="https://img.shields.io/badge/arch-universal-blue" alt="arch">
   <img src="https://img.shields.io/badge/engine-AppKit%20%2B%20SwiftUI-orange" alt="engine">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
 </p>
@@ -46,11 +46,11 @@
 - **一直显示**：菜单里勾上「一直显示」，绳子常驻屏幕顶上，指针移开也不收；线上空了就把空绳子留在原地。全屏 App 挡住时会自动收起（刻意保留），退出全屏自动回来。
 - **纯原生、纯离线**：Swift + AppKit/SwiftUI 写成的一个 `.app`，没有第三方依赖、不联网、不上传任何东西。
 
-> **平台说明 Platform Note：本工具为 macOS 原生应用（Swift + AppKit/SwiftUI，打包为 `.app` / `.dmg`），需要 macOS 14 及以上、Apple Silicon（arm64）。暂无 Windows / Linux 版本。**
+> **平台说明 Platform Note：本工具为 macOS 原生应用（Swift + AppKit/SwiftUI，打包为 `.app` / `.dmg`），需要 macOS 12 及以上，Intel 与 Apple Silicon 通用（universal 二进制，一个包两种芯片）。暂无 Windows / Linux 版本。**
 
 ### 快速开始
 
-1. 在 [Releases](https://github.com/hwl513782273/LiangYiJia/releases/latest) 下载 `14-LiangYiJia-1.0.0-arm64.dmg`。
+1. 在 [Releases](https://github.com/hwl513782273/LiangYiJia/releases/latest) 下载 `12-LiangYiJia-1.0.0-universal.dmg`。
 2. 打开 DMG，把 `晾衣架.app` 拖进「应用程序」。
 3. 首次打开：右键 → 打开（或终端执行 `xattr -dr com.apple.quarantine /Applications/晾衣架.app`）。
 4. 启动后会问「让晾衣架接管你的截图？」——点**开启**。之后照常截图，卡片就挂上来了；指针移到屏幕顶端中间，绳子滑下来。
@@ -60,6 +60,7 @@
 ```
 git clone https://github.com/hwl513782273/LiangYiJia.git
 cd LiangYiJia
+# 默认编 universal（arm64 + x86_64）；只想要本机架构、省一半时间：ARCHS=arm64 bash scripts/build-app.sh release
 bash scripts/build-app.sh release
 cp -R build/晾衣架.app /Applications/
 open /Applications/晾衣架.app
@@ -68,18 +69,18 @@ open /Applications/晾衣架.app
 打包 DMG（需 macOS 自带 `hdiutil`，把 `1.0.0` 换成实际版本号）：
 
 ```
-hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov -format UDZO "14-LiangYiJia-1.0.0-arm64.dmg"
+hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov -format UDZO "12-LiangYiJia-1.0.0-universal.dmg"
 ```
 
 改版细节与踩坑记录（为什么这么实现）另见 [docs/CHANGES.zh-Hans.md](docs/CHANGES.zh-Hans.md)。
 
 ### macOS 版本选择
 
-- **Apple Silicon（M1 及更新）— 推荐**：下载 `14-LiangYiJia-1.0.0-arm64.dmg`。构建目标是 `arm64-apple-macosx14.0`，在 macOS 14 / 15 / 26 上均可运行。
+- **Intel Mac 与 Apple Silicon 通用 — 一个包就够**：下载 `12-LiangYiJia-1.0.0-universal.dmg`。里面是 arm64 与 x86_64 两个切片粘成的 universal 二进制，macOS 12（Monterey）及以上都能跑。
 
-> 目前只有 arm64 一档，没有 Intel 版：构建脚本只编 `arm64-apple-macosx14.0`。DMG 为 ad-hoc 签名、**未公证（notarized）**，首次打开请右键「打开」放行 Gatekeeper。
+> 不再分开发 arm64 / x86_64 两档：universal 一个文件同时覆盖两种芯片，下载时不用挑。DMG 为 ad-hoc 签名、**未公证（notarized）**，首次打开请右键「打开」放行 Gatekeeper。
 
-> 仓库「发行版 / Releases」的命名格式为：`支持最低版本-LiangYiJia-版本-架构`（如 `14-LiangYiJia-1.0.0-arm64.dmg`）。第一段数字为该包实际支持的最低 macOS 版本号。
+> 仓库「发行版 / Releases」的命名格式为：`支持最低版本-LiangYiJia-版本-架构`（如 `12-LiangYiJia-1.0.0-universal.dmg`）。第一段数字为该包实际支持的最低 macOS 版本号。
 
 ### 支持的功能
 
@@ -108,7 +109,7 @@ hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov 
 
 ### 已知限制
 
-- **只支持 Apple Silicon 与 macOS 14+**：构建脚本只编 arm64，Intel Mac 用不了。想自己出 Intel 版需要改 `scripts/build-app.sh` 里的 `--triple` 再编译，未做测试。
+- **macOS 12 / 13 与 Intel 机器没有实机验证**：这个包确实是 arm64 + x86_64 的 universal 二进制，最低系统也标成了 12.0，编译和 API 版本检查都过了；但发布者手上只有 Apple Silicon 的新系统，**没有 macOS 12 / 13 真机、也没有 Intel 机器实际跑过**。如果你在那边遇到界面错位、卡片位置偏移之类的问题，请开 issue 并附上截图和 `sw_vers` 输出。
 - **ad-hoc 签名，每次重新编译都要重新授权**：没有开发者证书，每次重编 macOS 会把 App 当成新程序，重新问一次截图文件夹的访问权限，也会重新弹一次 Gatekeeper 放行。没有自动更新，上游更新的合并要自己做。
 - **双开必挂两遍**：不要和原版 Tendedero 或其他剪贴板接管程序同时运行，会重复监听同一个文件夹，同一条内容挂出两张。
 - **剪贴板监听只看「有没有隐私标记」**：密码管理器、浏览器隐私复制会打 `org.nspasteboard.ConcealedType` 一类标记，命中即丢弃；但**没有标记的敏感内容照样会挂**（例如从终端复制的令牌、密钥）。全自动监听本质上就有这个风险，不用的时候把「挂上复制的内容」关掉。
@@ -126,11 +127,11 @@ hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov 
 - **Always shown**: tick "一直显示" in the menu and the line stays up, empty or not, even after the pointer leaves. It still hides behind full-screen apps on purpose and comes back when you leave full screen.
 - **Native, offline, zero dependencies**: one Swift `.app` built with AppKit and SwiftUI. No third-party libraries, no network access, nothing uploaded anywhere.
 
-> **Platform Note: this is a native macOS app (Swift + AppKit/SwiftUI, packaged as `.app` / `.dmg`). It needs macOS 14 or later on Apple Silicon (arm64). There is no Windows / Linux build.**
+> **Platform Note: this is a native macOS app (Swift + AppKit/SwiftUI, packaged as `.app` / `.dmg`). It needs macOS 12 or later, on Intel and Apple Silicon alike (a single universal binary). There is no Windows / Linux build.**
 
 ### Quick start
 
-1. Download `14-LiangYiJia-1.0.0-arm64.dmg` from [Releases](https://github.com/hwl513782273/LiangYiJia/releases/latest).
+1. Download `12-LiangYiJia-1.0.0-universal.dmg` from [Releases](https://github.com/hwl513782273/LiangYiJia/releases/latest).
 2. Open the DMG and drag `晾衣架.app` into "Applications".
 3. First launch: right-click → Open (or run `xattr -dr com.apple.quarantine /Applications/晾衣架.app`).
 4. On launch it asks "让晾衣架接管你的截图？" — choose **开启**. Take a screenshot as usual and the card appears; rest the pointer in the middle of the top edge and the line glides down.
@@ -140,6 +141,7 @@ Build from source (requires macOS 14+ and the Swift 5.9 toolchain, i.e. Xcode 15
 ```
 git clone https://github.com/hwl513782273/LiangYiJia.git
 cd LiangYiJia
+# 默认编 universal（arm64 + x86_64）；只想要本机架构、省一半时间：ARCHS=arm64 bash scripts/build-app.sh release
 bash scripts/build-app.sh release
 cp -R build/晾衣架.app /Applications/
 open /Applications/晾衣架.app
@@ -148,18 +150,18 @@ open /Applications/晾衣架.app
 Package the DMG (uses the bundled `hdiutil`; replace `1.0.0` with the real version):
 
 ```
-hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov -format UDZO "14-LiangYiJia-1.0.0-arm64.dmg"
+hdiutil create -volname "LiangYiJia 1.0.0" -srcfolder "build/晾衣架.app" -ov -format UDZO "12-LiangYiJia-1.0.0-universal.dmg"
 ```
 
 Implementation notes and the pitfalls behind each decision are in [docs/CHANGES.zh-Hans.md](docs/CHANGES.zh-Hans.md) (Chinese).
 
 ### Choose a macOS build
 
-- **Apple Silicon (M1 and newer) — Recommended**: download `14-LiangYiJia-1.0.0-arm64.dmg`. The build target is `arm64-apple-macosx14.0` and runs on macOS 14, 15 and 26.
+- **Intel and Apple Silicon alike — one build fits all**: download `12-LiangYiJia-1.0.0-universal.dmg`. It is a universal binary (arm64 + x86_64 slices) and runs on macOS 12 (Monterey) or later.
 
-> There is only an arm64 build. No Intel variant: the build script compiles `arm64-apple-macosx14.0` only. The DMG is ad-hoc signed and **not notarized**; right-click → Open on first launch to pass Gatekeeper.
+> There are no separate arm64 / x86_64 downloads: one universal file covers both chip families, so there is nothing to pick wrong. The DMG is ad-hoc signed and **not notarized**; right-click → Open on first launch to pass Gatekeeper.
 
-> Release naming format: `minimum-macOS-version-LiangYiJia-version-arch` (e.g. `14-LiangYiJia-1.0.0-arm64.dmg`). The first number is the minimum macOS version the package actually supports.
+> Release naming format: `minimum-macOS-version-LiangYiJia-version-arch` (e.g. `12-LiangYiJia-1.0.0-universal.dmg`). The first number is the minimum macOS version the package actually supports.
 
 ### Supported features
 
@@ -188,7 +190,7 @@ Implementation notes and the pitfalls behind each decision are in [docs/CHANGES.
 
 ### Known limitations
 
-- **Apple Silicon and macOS 14+ only**: the build script compiles arm64. For an Intel build you would have to change `--triple` in `scripts/build-app.sh` and compile it yourself; that path is untested.
+- **No hands-on testing on macOS 12 / 13 or on Intel**: the package really is a universal binary (arm64 + x86_64) with a minimum of macOS 12.0 and it compiles against the macOS 12 SDK, but the maintainer only has an Apple Silicon machine on a recent macOS, so **it has never been run on macOS 12 / 13 or on real Intel hardware**. If layout looks off there, please open an issue with a screenshot and the output of `sw_vers`.
 - **Ad-hoc signed, so every rebuild asks again**: without a developer certificate each rebuild looks like a new app to macOS and has to be re-granted folder access and re-approved by Gatekeeper. There is no auto-update; merging upstream changes is manual.
 - **Never run two copies**: do not run the original Tendedero or any other clipboard-takeover app alongside this one, or the same folder is watched twice and every item hangs twice.
 - **Clipboard monitoring only honours privacy markers**: password managers and private browser copies set `org.nspasteboard.ConcealedType` style markers and are dropped, but **unmarked sensitive content still hangs** — a token or key copied from a terminal, for example. Automatic monitoring carries that risk by nature; turn "挂上复制的内容" off when you do not need it.

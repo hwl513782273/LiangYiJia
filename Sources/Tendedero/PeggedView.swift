@@ -40,9 +40,9 @@ struct PeggedView: View {
         .transaction { t in if item.falling { t.animation = nil } }
         .animation(.easeOut(duration: 0.16), value: item.flying)
         .onAppear(perform: arrive)
-        .onChange(of: item.flying) { was, now in if was && !now { land() } }
-        .onChange(of: line.gust) { _, _ in breeze() }
-        .onChange(of: copied) { _, isCopied in if isCopied { nudge(3) } }
+        .onChangeCompat(of: item.flying) { was, now in if was && !now { land() } }
+        .onChangeCompat(of: line.gust) { _, _ in breeze() }
+        .onChangeCompat(of: copied) { _, isCopied in if isCopied { nudge(3) } }
     }
 
     /// The photo fits inside the card area keeping its proportions, so the
@@ -173,14 +173,28 @@ enum Frame {
     static let inset: CGFloat = 4
 }
 
+/// macOS 12 没有 `AnyShape`（13 才引入），这里用「把所有形状归一成 Path」的小类型顶上。
+/// 用途：`glassFrame` 要在圆角矩形 / 圆 / 胶囊之间三选一，又不能让返回值类型跟着分支变。
+struct AnyShapeCompat: Shape {
+    private let builder: (CGRect) -> Path
+
+    init<S: Shape>(_ shape: S) {
+        builder = { shape.path(in: $0) }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        builder(rect)
+    }
+}
+
 extension View {
     /// A crisp glass: the system's blurred material with a thin specular
     /// edge, lit from above. No refraction, so the background stays sharp
     /// around the frame instead of bending like gel.
     func glassFrame(cornerRadius: CGFloat = 0, circle: Bool = false, capsule: Bool = false) -> some View {
-        let shape: AnyShape = circle ? AnyShape(Circle())
-            : capsule ? AnyShape(Capsule())
-            : AnyShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        let shape: AnyShapeCompat = circle ? AnyShapeCompat(Circle())
+            : capsule ? AnyShapeCompat(Capsule())
+            : AnyShapeCompat(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         return background(.ultraThinMaterial, in: shape)
             .overlay(
                 shape.stroke(

@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
 APP="build/晾衣架.app"
 VERSION="1.0.0"
+# 最低支持的 macOS。12 = Monterey：既是 Intel Mac 还能装的系统，也覆盖 Apple Silicon 全部机型。
+# 改这个要同时改 Package.swift 的 platforms 与 Info.plist 的 LSMinimumSystemVersion。
+MIN_MACOS="12.0"
 # SwiftPM 的 target 名保持 Tendedero：改它要动 Sources 目录名，牵连太大，没必要
 PRODUCT_NAME="Tendedero"
 # 装进 bundle 后的可执行文件名 = 系统认的 App 名。
@@ -14,11 +17,31 @@ PRODUCT_NAME="Tendedero"
 # 活动监视器里的进程名，全都取这个文件名，写 Tendedero 就会显示成别人的名字。
 BIN_NAME="晾衣架"
 
-echo "==> 编译（只编 arm64：这台机器是 Apple Silicon，省一半时间）"
+# 默认出 universal（arm64 + x86_64 粘成一个包），Intel Mac 与 Apple Silicon 都能装。
+# 只想要本机架构、图快一半时间：ARCHS=arm64 scripts/build-app.sh release
+ARCHS="${ARCHS:-arm64 x86_64}"
+
+echo "==> 编译（架构：${ARCHS}，最低系统：${MIN_MACOS}）"
+# 变量紧挨中文全角标点时必须写 ${VAR}：bash 3.2 在非 UTF-8 locale 下会把汉字的
+# 高位字节算进变量名，报出 "ARCHS<乱码>: unbound variable"
 # --disable-sandbox：SwiftPM 评估 Package.swift 时会调用 sandbox-exec，
 # 在我们这个受限环境里会报 Operation not permitted，关掉即可
-swift build -c "$CONFIG" --triple arm64-apple-macosx14.0 --disable-sandbox >&2
-BIN="$(swift build -c "$CONFIG" --triple arm64-apple-macosx14.0 --disable-sandbox --show-bin-path)/$PRODUCT_NAME"
+SLICES=()
+for arch in $ARCHS; do
+  echo "    - $arch"
+  swift build -c "$CONFIG" --triple "${arch}-apple-macosx${MIN_MACOS}" --disable-sandbox >&2
+  SLICES+=("$(swift build -c "$CONFIG" --triple "${arch}-apple-macosx${MIN_MACOS}" --disable-sandbox --show-bin-path)/$PRODUCT_NAME")
+done
+
+# 单个架构直接用；两个架构用 lipo 粘成一个 universal 二进制
+if [ ${#SLICES[@]} -eq 1 ]; then
+  BIN="${SLICES[0]}"
+else
+  mkdir -p build
+  BIN="build/$PRODUCT_NAME-universal"
+  lipo -create "${SLICES[@]}" -output "$BIN"
+  echo "    lipo 合并：$(lipo -archs "$BIN")"
+fi
 
 echo "==> 组装 app bundle"
 rm -rf "$APP"
@@ -60,7 +83,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleLocalizations</key><array>${LANGUAGES}</array>
-  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSMinimumSystemVersion</key><string>${MIN_MACOS}</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSDesktopFolderUsageDescription</key>

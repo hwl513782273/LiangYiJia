@@ -101,7 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let host = NSHostingView(rootView: LineView(line: line))
-        host.sizingOptions = []
+        // sizingOptions 是 macOS 13 才有的；12 上不设，沿用系统默认行为。
+        // 设空集的本意是「别让内容反过来撑大 host」，而 12 上默认会更新 intrinsicContentSize；
+        // 但面板尺寸由 placeOnScreen 定好、host 跟着面板走，所以不设也能保持布局。
+        if #available(macOS 13.0, *) { host.sizingOptions = [] }
         panel = LinePanel(content: host)
         panel.placeOnScreen()
         updateCapacity()

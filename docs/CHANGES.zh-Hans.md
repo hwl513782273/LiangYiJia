@@ -114,6 +114,24 @@ Tendedero 的本地改版，加了六件事：**复制什么都能挂上绳**、
 
 **顺带改了一件事**：原版菜单里那个「登录时打开」走的是 `SMAppService`，要求正式签名，本项目是 ad-hoc 签名，点了必然弹错误框。现在它改成**自己读写 `~/Library/LaunchAgents/com.local.liangyijia.plist`**：打勾就写文件、取消就删文件，下次登录自动生效，不需要任何权限。菜单里的勾选状态也改成直接看这个文件在不在。
 
+### 7. 支持 Intel Mac 与 macOS 12（新增）
+
+原来这个包只能装在 Apple Silicon + macOS 14 以上的机器上。现在一个包同时支持两种芯片，最低系统降到 **12（Monterey）**。
+
+| 卡在哪 | 原因 | 改法 |
+|---|---|---|
+| 最低系统 | `Package.swift` 里声明 `.v14` | 改成 `.v12` |
+| `AnyShape` | macOS 13 才引入 | 自己写 `AnyShapeCompat: Shape`，内部统一归一成 `Path` |
+| `NSHostingView.sizingOptions` | macOS 13 才引入 | `if #available(macOS 13.0, *)` 才设，12 沿用系统默认 |
+| `.onChange(of:) { 旧值, 新值 in }` | 双参数闭包是 macOS 14 才有的 | 新增 `OnChangeCompat`：容器自己记住上一次的值，对外仍给两个参数 |
+| 只有一个架构 | 构建脚本只编 arm64 | 两个 `--triple` 各编一次，再用 `lipo -create` 粘成 universal |
+
+实测（本机 Apple Silicon）：`lipo -archs` 输出 `x86_64 arm64`，两个切片的 `minos` 都是 `12.0`，`Info.plist` 的 `LSMinimumSystemVersion` 是 `12.0`，启动正常。
+
+**踩到的坑**：`echo "架构：$ARCHS，..."` 这种「变量紧跟中文全角逗号」的写法，在非 UTF-8 locale 下 bash 3.2 会把汉字的高位字节算进变量名，直接报 `ARCHS<乱码>: unbound variable`。凡是中文标点紧挨变量，一律写 `${ARCHS}`。
+
+**没验证的**：macOS 12 / 13 真机、以及 Intel 机器的实际运行都没测过——手上只有一台 Apple Silicon 新系统。目前只保证「编译通过 + 没有调用 12 不存在的 API」，界面在 12 上会不会有细微错位，需要实测才能确认。
+
 ## 上限、清理与滚轮（原版自带，这里说清楚怎么用）
 
 这三个能力原版就有，不用改代码，菜单里就能设：
