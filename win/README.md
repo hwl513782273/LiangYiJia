@@ -43,7 +43,9 @@ macOS 版的 Windows 重写。**已经是可以跑起来、能挂东西的版本
 - **开机自启**：注册表 Run 项或计划任务
 - **保留数 / 滚轮回看**：界面层有（`keepOnLine` / `frontScroll`），托盘菜单还没接，滚轮也收不到（窗口不激活）
 - **悬停按 Delete 删除**：窗口 `WS_EX_NOACTIVATE`，键盘事件进不来，现在只能点叉号
-- **安装包**：`tauri build` 出 NSIS 安装器还没跑通验收
+- **NSIS 安装包**：这台 ARM64 Windows 上跑不出来 —— Tauri 缓存里的 `makensis.exe`（2.5KB 那个）
+  是个启动器，起不来（`error 0x2`）；换成真正的 `NSIS\Bin\makensis.exe` 又缺依赖 DLL
+  （退出码 `0xC0000135`）。所以现在发的是「免安装 exe + install.cmd」方案（见 `dist/`）。
 - **网页标题抓取**：链接卡现在显示域名，不是真实标题
 - **钉住状态不持久化**：钉住只在本次运行有效（macOS 版会存）
 - **滚轮回看**：窗口不激活收不到 wheel，25/50/100 张里靠左的部分看不到，只能等它被删
@@ -76,6 +78,15 @@ npm install
 npx tauri icon app-icon.png      # 只在首次或换图标时跑
 npx tauri build --no-bundle      # 产物：src-tauri/target/release/liangyijia.exe
 ```
+
+出安装包（macOS / Windows 各一份，都放在仓库根的 `dist/`）：
+
+```bash
+scripts/build-app.sh release      # 编 build/晾衣架.app（默认 arm64 + x86_64）
+scripts/make-dmg.sh 1.0.0         # 打成 dist/12-LiangYiJia-1.0.0-universal.dmg
+```
+
+Windows 那边是「免安装 exe + `install.cmd`」打包成 zip（NSIS 安装器在这台 ARM64 虚拟机上编不出来，原因见下面「还没做」）。
 
 只想看界面、不编 Rust（在任意系统上）：
 

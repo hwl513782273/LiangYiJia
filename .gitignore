@@ -13,3 +13,6 @@ win/src-tauri/target/
 win/dist/
 win/src-tauri/gen/
 win/Cargo.lock.bak
+
+# 打包产物（dmg / Windows 安装包），不放进仓库
+dist/
