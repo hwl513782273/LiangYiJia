@@ -79,7 +79,6 @@ export class Line {
 
     // 定时任务队列：不用 setTimeout，便于整条线暂停/继续
     this.timers = [];
-    this.lettingGo = null;   // 正在清理的那张，避免同时清两张
     this.lastFall = 0;
     this.time = 0;
   }
@@ -116,82 +115,86 @@ export class Line {
     this.maxItems = Math.max(fits, this.keepOnLine ?? fits);
   }
 
-  /** 挂上一个新东西。满了就让最老的那张下线。 */
+  /** 挂上一个新东西。满了就让最老那张「站到最前面」再掉下去。 */
   hang(item) {
     // 先去重：同样内容不重复挂（真机上用文件路径或文本哈希，这里用 id 由调用方保证）
     this.items.push(item);
     this.scrollTo(0);
     arrive(item);
 
-    // 满线只清一张：一次进来一条内容，也只该掉一张（一次掉好几张会糊成一团）。
-    // 正在清（已经滚到最老那头、等它掉）时不另开一条，免得两张同时被点名；
-    // 那一轮掉完会自己把还超出的补上。
-    if (this.liveCount > this.maxItems && this.lettingGo == null) {
-      const oldest = this.oldestLoose();
-      if (oldest) this.letGo(oldest.id);
-    }
+    this.enforceCapacity();
     return item;
   }
 
   /**
-   * 让某一张下线。
-   *
-   * 线能滚动（设了保留 25/50/100 且一屏放不下）时走一遍「看得见的过场」：
-   * ① 先滑到最老那一头（否则最老那张在屏幕左边外面，掉了也没人看见）；
-   * ② 等滑动停下再让它照原样掉下去；
-   * ③ 后面那张立刻补位；
-   * ④ 滑回最新一头，还超出的顺手补清。
-   * 这一段照抄 macOS 版 Line.swift 的 letGo(stepAside:startDelay:)。
-   *
-   * @param {boolean} stepAside 一次要清好几张时传 false：不做滑动过场，直接掉。
+   * 屏幕上最前面（最左）那张**完整看得见**、并且没被钉住的，在数组里的下标。
+   * 返回 null 表示一张都看不见（比如线收起来了）。
    */
-  letGo(id, stepAside = true) {
-    const scrolls = stepAside && this.keepOnLine != null && this.items.length > this.visibleCount;
-    if (!scrolls) {
-      // 线不滚动、或者一屏看得全：最老那张本来就在最前面，直接掉，但马上补位
-      this.drop(id);
-      if (stepAside) this.sweepFallen();
-      return;
+  frontLooseIndex() {
+    let best = null;
+    const halfW = this.layout.cardWidth / 2;
+    for (let i = 0; i < this.items.length; i++) {
+      const it = this.items[i];
+      if (it.kept || it.held) continue;
+      const x = this.layout.x(i, this.items.length, this.width, this.visibleCount,
+                             this.scroll, this.pinnedLead, this.keepOnLine);
+      // 左边沿已经出屏幕的不算「看得见」：整张都在屏幕内才行
+      if (x - halfW < 0) continue;
+      if (best == null || x < best.x) best = { i, x };
     }
+    return best ? best.i : null;
+  }
 
-    this.lettingGo = id;
-
-    // ① 滑到最老一头（snap：让卡片真的跟着滑动走到最前面，而不是被弹簧拖在后面）
-    this.scrollTo(this.layout.frontScroll(this.items.length, this.visibleCount), 0.35, easeInOut, true);
-
-    dbg(`letGo ${id} scroll→${Math.round(this.layout.frontScroll(this.items.length, this.visibleCount))} count=${this.items.length} vis=${this.visibleCount} max=${this.maxItems}`);
-
-    // ② 滑动走完再掉，掉落起点才对得上卡片当时的位置
-    this.after(0.42, () => {
-      if (!this.items.some((i) => i.id === id)) { this.lettingGo = null; return; }
-      this.drop(id);
-      // ③ 后面那张立刻补到最前面：数量少了一张，可滚动的余量也跟着少一格，
-      //    不夹一下的话线会停在滚过头的空处。
-      this.scroll = Math.min(this.scroll, this.layout.frontScroll(this.items.length, this.visibleCount));
-      this.lettingGo = null;
-
-      // ④ 掉完滑回最新一头，剩下还超出的按「不做过场」清掉
-      this.after(0.9, () => {
-        this.scrollTo(0, 0.35, easeInOut, true);
-        if (this.liveCount > this.maxItems) {
-          const next = this.oldestLoose();
-          if (next) this.after(0.45, () => this.letGo(next.id, false));
-        }
-      });
-    });
+  /** 让第 index 张立刻站到它该在的位置上（不滑、不从屏幕外飞进来）。 */
+  snapToSlot(index) {
+    const it = this.items[index];
+    const x = this.layout.x(index, this.items.length, this.width, this.visibleCount,
+                            this.scroll, this.pinnedLead, this.keepOnLine);
+    it.px.jump(x);
+    it.xInit = true;
+    // 旧矩形作废：掉落起点会按新位置重算（drop 里没有矩形时会自己算）
+    this.rects.delete(it.id);
   }
 
   /**
-   * 把「保留张数」调小之后，超出的老照片按满线的规矩下线。
-   * 调用时机：托盘里改了保留数，或者窗口变大导致一屏放得下更多。
+   * 超出保留张数就清理。做法不是「滑到最老那头」，而是：
+   * **把最老那张换到最前面看得见的位置，然后在那儿掉下去。**
+   *
+   * 这样两件事同时成立：掉下去的确实是最老的内容（语义对），
+   * 动画又演在眼前（不用为了看它掉把整条线滑几千像素再滑回来）。
+   * 换位是同一帧内完成的，画面上看到的就是「最前面那张掉下去、后面补位」。
+   * 钉住的永远不参与（宁可超一点，也不动钉住的）。
+   */
+  enforceCapacity() {
+    let guard = 0;
+    while (this.liveCount > this.maxItems && guard++ < 50) {
+      const visIdx = this.frontLooseIndex();
+      const oldIdx = this.items.findIndex((i) => !i.kept && !i.held);
+      if (visIdx == null || oldIdx < 0) break;
+
+      if (oldIdx !== visIdx) {
+        // 两张互换：最老的内容挪到最前面，原来那张退到最老的位置（屏幕外）
+        const tmp = this.items[oldIdx];
+        this.items[oldIdx] = this.items[visIdx];
+        this.items[visIdx] = tmp;
+        this.snapToSlot(oldIdx);
+        this.snapToSlot(visIdx);
+      }
+      this.drop(this.items[visIdx].id);
+    }
+  }
+
+  /** 让某一张下线：直接掉，后面立刻补位（掉落动画由渲染层播）。 */
+  letGo(id) {
+    this.drop(id);
+  }
+
+  /**
+   * 把「保留张数」调小之后，超出的按满线的规矩下线。
+   * 调用时机：托盘里改了保留数，或者窗口尺寸变化。
    */
   trim() {
-    let guard = 0;
-    while (this.liveCount > this.maxItems && guard++ < 200) {
-      const oldest = this.oldestLoose();
-      if (!oldest) break;           // 全被钉住了就停手：宁可超一点，也不动钉住的
-      this.letGo(oldest.id, false);
-    }
+    this.enforceCapacity();
     this.scrollTo(0);
   }
 
@@ -238,7 +241,7 @@ export class Line {
       r = { x: px - cw / 2, y: top + 14, w: cw, h: ch, rot: it.tilt };
     }
 
-    dbg(`drop ${id} rect=${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}x${Math.round(r.h)}`);
+    dbg(`drop ${id} idx=${i} count=${this.items.length} vis=${this.visibleCount} max=${this.maxItems} keep=${this.keepOnLine} scroll=${Math.round(this.scroll)} w=${Math.round(this.width)} rect=${Math.round(r.x)},${Math.round(r.y)}`);
     this.items.splice(i, 1);
     this.lastFall = this.time;
     this.flights.push({
