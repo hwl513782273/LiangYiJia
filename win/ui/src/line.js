@@ -127,19 +127,19 @@ export class Line {
   }
 
   /**
-   * 屏幕上最前面（最左）那张**完整看得见**、并且没被钉住的，在数组里的下标。
+   * 屏幕上最前面（最左）那张看得见的、并且没被钉住的，在数组里的下标。
    * 返回 null 表示一张都看不见（比如线收起来了）。
    */
   frontLooseIndex() {
     let best = null;
-    const halfW = this.layout.cardWidth / 2;
     for (let i = 0; i < this.items.length; i++) {
       const it = this.items[i];
       if (it.kept || it.held) continue;
       const x = this.layout.x(i, this.items.length, this.width, this.visibleCount,
                              this.scroll, this.pinnedLead, this.keepOnLine);
-      // 左边沿已经出屏幕的不算「看得见」：整张都在屏幕内才行
-      if (x - halfW < 0) continue;
+      // 只看中心在不在屏幕里：贴着左边缘那张虽然被淡化了，它仍然是「看得见的第一张」，
+      // 就该让它掉（用户要的就是这一张）。完全跑出屏幕中心的才跳过。
+      if (x < 0) continue;
       if (best == null || x < best.x) best = { i, x };
     }
     return best ? best.i : null;

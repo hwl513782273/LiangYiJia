@@ -52,6 +52,9 @@ final class Line: ObservableObject {
     /// How many photos fit across the screen. With Keep on line set, the
     /// line can hold more, and the rest are reached by scrolling.
     var visibleCount = 8
+    /// The panel's width in points. 用来算「屏幕最前面那一格」在哪 ——
+    /// 版式 Layout.x 需要宽度，模型这边由 AppDelegate.updateCapacity() 填。
+    var width: CGFloat = 0
     /// How far the line is scrolled towards older photos, in points; 0 shows
     /// the newest.
     @Published var scroll: CGFloat = 0
@@ -105,16 +108,9 @@ final class Line: ObservableObject {
         sweepFallen()
         items.append(item)
         scroll = 0
-        // A full line lets the oldest photo fall off the far end. Only one: a
-        // line hung on a wider screen keeps its length here instead of losing
-        // several photos to a single capture.
-        // 满线时只清一张：屏幕更宽时线保住的长度不会因为一次复制掉好几张。
-        // 正在清（滚到最老那头、等掉落）时不另开一条，免得两张同时被点名；
-        // 这一轮稍后自己会补上。
-        if liveCount > maxItems, lettingGo == nil, let oldest = oldestLoose {
-            // 新卡片正从截图位置飞过来时先等它落位，否则它飞向的是滚走以后的位置。
-            letGo(oldest.id, startDelay: flying ? 0.7 : 0)
-        }
+        // A full line lets its oldest photo go. 满线清一张：把最老那张换到
+        // 屏幕最前面那一格再掉下去（线不滑动），下面 enforceCapacity 里有说明。
+        enforceCapacity()
         save()
         if !quietly { play("Tink", volume: 0.35) }
         return item.id
@@ -323,17 +319,11 @@ final class Line: ObservableObject {
 
     /// After Keep on line is lowered, the oldest photos past it go the way
     /// of a full line.
-    /// 把「保留数量」调小时，超出的老照片按满线的规矩下线（不来回滚动）。
+    /// 把「保留数量」调小时，多出来的按满线的规矩下线（做法见 enforceCapacity）。
     func trim() {
-        while liveCount > maxItems, let oldest = oldestLoose {
-            letGo(oldest.id, stepAside: false)
-        }
+        enforceCapacity()
         scroll = 0
     }
-
-    /// 正在清掉的那一张。从「滚到最老一头」到「真的掉落」之间隔着几帧，
-    /// 这期间不再另起一条清理，免得同一张被点名两次、或者一次掉两张。
-    private var lettingGo: UUID?
 
     /// 最老那张下线：自家文件夹里的进废纸篓，别处的只离开线。
     private func dropOldest(_ id: UUID) {
@@ -341,61 +331,46 @@ final class Line: ObservableObject {
         drop(id, quietly: true)
     }
 
-    /// 滚到最老一头时线停的位置：最老那张刚好落在最前面看得见的地方。
-    /// 线不滚动时是 0。
-    private var frontScroll: CGFloat {
-        CGFloat(max(0, items.count - visibleCount)) * Layout.spacing
+    /// 屏幕上最前面（最左）那张看得见的、并且没被钉住 / 拿在手上的，
+    /// 在 items 里的下标。返回 nil 表示一张都看不见（线收起来了，或者宽度还没量到）。
+    private func frontLooseIndex(avoid: Set<UUID> = []) -> Int? {
+        guard width > 0 else { return nil }
+        var best: (index: Int, x: CGFloat)?
+        for (i, item) in items.enumerated() {
+            if item.falling || item.kept || item.held || avoid.contains(item.id) { continue }
+            let x = Layout.x(index: i, count: items.count, width: width,
+                             visible: visibleCount, scroll: scroll, pinned: pinnedLead)
+            // 只看中心在不在屏幕里：贴着左边缘那张虽然被淡化了，它仍然是
+            // 「看得见的第一张」，就该让它掉。中心都跑出屏幕的才跳过。
+            if x < 0 { continue }
+            if best == nil || x < best!.x { best = (i, x) }
+        }
+        return best?.index
     }
 
-    /// The oldest photo falling off a full line. Like the cross, a file from
-    /// Tendedero's folder goes to the Trash, or nothing would ever take it out
-    /// of that folder. If the Trash refuses it, it still leaves the line.
+    /// 满线清理：**把最老那张换到屏幕最前面那一格，然后在那儿掉下去。**
     ///
-    /// 清理的过场（看得见才算数）：
-    /// ① 把最老的两张（要掉的那张 + 它后面那张）一起滚到线的最前端；
-    /// ② 最老那张照原样掉落（动画没动，还是 CaptureFlight 在整屏上画）；
-    /// ③ 后面那张立刻补到最前面，不留空位；
-    /// ④ 滚回最新的一头，顺手把还超出的清完。
+    /// 为什么不「滚到最老一头再滚回」：设了保留 25/50/100、一屏只放得下七八张时，
+    /// 真正最老那张在屏幕左边外面，想让看见它就得把整条线滑几千点再滑回来 ——
+    /// 又慢又乱。换位则是同一帧内完成：画面上看到的就是「最前面那张掉下去、
+    /// 后面的补位、新内容从右边进来」，而掉下去的确实是最老的内容。
     ///
-    /// - Parameters:
-    ///   - stepAside: false 时不做这套过场（一次要清好几张时用）。
-    ///   - startDelay: 开头等多久才滚；新卡片正飞过来时要等它落位。
-    private func letGo(_ id: UUID, stepAside: Bool = true, startDelay: TimeInterval = 0) {
-        // 线不滚动、或者一眼看得全：最老那张本来就在最前面，直接掉，
-        // 但马上补位，整排不再等零点几秒才跳一格。
-        guard stepAside, Line.keepOnLine != nil, items.count > visibleCount else {
-            dropOldest(id)
-            if stepAside { sweepFallen() }
-            return
-        }
-        lettingGo = id
-        DispatchQueue.main.asyncAfter(deadline: .now() + startDelay) { [weak self] in
-            guard let self else { return }
-            // ① 滚到最老一头
-            log.notice("清理 ①：滚到最老一头（offset \(self.frontScroll, privacy: .public)）")
-            withAnimation(.easeInOut(duration: 0.35)) { self.scroll = self.frontScroll }
-            // 等滚动的动画走完再掉，卡片位置才对得上
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
-                guard let self, self.items.contains(where: { $0.id == id && !$0.falling }) else {
-                    self?.lettingGo = nil
-                    return
-                }
-                // ② 照原样掉落
-                log.notice("清理 ②：最老那张掉落")
-                self.dropOldest(id)
-                // ③ 后面那张立刻补到最前面（位置别停在滚过头的空处）
-                self.sweepFallen()
-                if self.scroll > self.frontScroll { self.scroll = self.frontScroll }
-                self.lettingGo = nil
-                // ④ 掉完了滚回最新的一头
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-                    guard let self else { return }
-                    log.notice("清理 ④：滚回最新的一头")
-                    withAnimation(.easeInOut(duration: 0.35)) { self.scroll = 0 }
-                    if self.liveCount > self.maxItems, let next = self.oldestLoose {
-                        self.letGo(next.id, stepAside: false)
-                    }
-                }
+    /// 钉住 / 拿在手上的永远不参与；一次只清一张，进来一条内容也只该掉一张。
+    func enforceCapacity(avoid: Set<UUID> = []) {
+        var guardCount = 0
+        while liveCount > maxItems, guardCount < 50 {
+            guardCount += 1
+            guard let oldest = items.firstIndex(where: {
+                !$0.falling && !$0.kept && !$0.held && !avoid.contains($0.id)
+            }) else { break }
+
+            // 宽度还没量到（极端情况）就退化成「掉最老那张」，至少不会让线无限长
+            if let front = frontLooseIndex(avoid: avoid), front != oldest {
+                items.swapAt(oldest, front)
+                log.notice("满线清理：最老那张换到第 \(front, privacy: .public) 格再掉")
+                dropOldest(items[front].id)
+            } else {
+                dropOldest(items[oldest].id)
             }
         }
     }
@@ -521,9 +496,8 @@ final class Line: ObservableObject {
         }
         // As when something new hangs, a full line lets its oldest photo go,
         // never one that just came back.
-        while liveCount > maxItems, let oldest = items.first(where: { !$0.falling && !$0.kept && !back.contains($0.id) }) {
-            letGo(oldest.id)
-        }
+        // 刚放回来的那几张不参与清理（avoid: back），其余照满线的规矩：换位后掉落。
+        enforceCapacity(avoid: back)
         keepKeptFirst()
         save()
         play("Tink", volume: 0.35)

@@ -1027,6 +1027,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fits = max(3, min(12, Int(usable / Layout.spacing)))
         line.visibleCount = fits
         line.maxItems = max(fits, Line.keepOnLine ?? fits)
+        // 满线清理要把「最老那张」换到屏幕最前面那一格，算位置需要宽度
+        line.width = panel.frame.width
     }
 
     /// 显示器接上、拔掉、改分辨率之后，把线重新放到该在的屏上，并按新宽度重排。
