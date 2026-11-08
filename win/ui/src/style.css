@@ -138,3 +138,28 @@ body.light .toolbar button:hover { background: rgba(0, 0, 0, 0.10); }
   z-index: 30;
   pointer-events: none;
 }
+
+/* ---------- 原生模式（页面跑在 Tauri 窗口里时） ----------
+   去掉假桌面和工具栏，整页透明：窗口只有 canvas 那一块，
+   没画东西的地方透出真实桌面。html.native 由 app.js 运行时加上。 */
+html.native,
+html.native body {
+  background: transparent;
+}
+
+html.native .desktop,
+html.native .desktop-hint,
+html.native .toolbar,
+html.native .debug {
+  display: none !important;
+}
+
+/* 开发期读数：只在原生模式且带示例内容时显示，正式运行不会出现 */
+html.native.debugon .debug {
+  display: block !important;
+  left: 12px;
+  top: 150px;
+  color: #FFD166;
+  font: 13px/1.5 ui-monospace, Consolas, monospace;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}

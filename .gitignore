@@ -11,3 +11,5 @@ iconset/
 win/node_modules/
 win/src-tauri/target/
 win/dist/
+win/src-tauri/gen/
+win/Cargo.lock.bak

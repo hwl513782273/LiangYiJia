@@ -17,6 +17,20 @@ let hoverId = null;
 let reveal = 1;          // 1 = 放下，0 = 收起
 let revealTarget = 1;
 
+const params = new URLSearchParams(location.search);
+
+// 原生模式：页面跑在 Tauri 里（有 __TAURI__）时，去掉假桌面和工具栏、背景透明，
+// 并告诉外壳「现在可以整窗点击穿透」。
+// 浏览器里跑（原型预览）时这些都不做，方便在 Mac 上直接看效果。
+const isNative = typeof window.__TAURI__ !== 'undefined';
+if (isNative) document.documentElement.classList.add('native');
+const tauriInvoke = isNative ? window.__TAURI__.core.invoke : async () => {};
+
+// 原生 + 示例内容一起开时，顺便在屏幕上显示一行读数。
+// 用途：Windows 上没法开 DevTools，只能把 innerWidth/dpr/可见张数直接画出来核对版式。
+let nativeDebug = false;
+let clickCount = 0;
+
 // ---------- 视口与缩放 ----------
 // 高分屏上按 devicePixelRatio 放大画布，再整体缩放，线才不会糊。
 let dpr = 1;
@@ -127,11 +141,19 @@ let last = performance.now();
 function drawFrame() {
   render(ctx, line, { width: window.innerWidth, height: stageHeight(), dark, hoverId, reveal });
 
+  // 画完 rects 才是这一帧的真实位置，这时候上报给 Rust 做命中判断
+  reportHitRects();
+
   const dbg = document.getElementById('debug');
-  if (dbg && params.get('debug') === '1') {
-    const f = line.flights[0];
-    dbg.textContent = `items=${line.items.length} flights=${line.flights.length} visible=${line.visibleCount} max=${line.maxItems} reveal=${reveal.toFixed(2)}\n`
-      + (f ? `flight y=${f.y.toFixed(0)} alpha=${f.alpha.toFixed(2)} x=${f.x.toFixed(0)} w=${f.w.toFixed(0)}` : 'flight 无');
+  if (dbg && (params.get('debug') === '1' || nativeDebug)) {
+    const rects = line.items.map((it) => `${it.px.value.toFixed(0)}`).join(',');
+    const r0 = line.rects.get(line.items[0] && line.items[0].id);
+    dbg.textContent = `w=${window.innerWidth} h=${window.innerHeight} dpr=${(window.devicePixelRatio || 1).toFixed(2)}`
+      + ` screen=${window.screen.width}x${window.screen.height}\n`
+      + `canvas=${canvas.width}x${canvas.height} css=${canvas.clientWidth}x${canvas.clientHeight}`
+      + ` line=${line.width} visible=${line.visibleCount} items=${line.items.length}\n`
+      + `cardW=${line.layout.cardWidth} spacing=${line.layout.spacing} hover=${hoverId ?? '-'} clicks=${clickCount} centers=${rects}`
+      + (r0 ? `\nrect0=(${r0.x.toFixed(0)},${r0.y.toFixed(0)}) ${r0.w.toFixed(0)}x${r0.h.toFixed(0)}` : '');
   }
 }
 
@@ -148,19 +170,14 @@ function frame(now) {
   }
 
   drawFrame();
-  // ?freeze=1 只画一帧就停住：无头截图必须用它，否则浏览器会继续跑几十帧，
-// 拍到的是动画结束之后的样子（掉落卡片早就回收了）。也用来做视觉回归基准图。
-if (params.get('freeze') === '1') {
-  drawFrame();
-} else {
   requestAnimationFrame(frame);
-}
 }
 
 // ---------- 鼠标 ----------
-canvas.addEventListener('mousemove', (e) => {
-  const r = canvas.getBoundingClientRect();
-  const hit = hitTest(line, e.clientX - r.left, e.clientY - r.top);
+// 浏览器原型直接听 mousemove；原生模式下窗口大部分时间是点击穿透的，
+// 收不到 mousemove，改由 Rust 侧轮询系统光标后通过 'cursor' 事件送坐标过来。
+function applyHover(mx, my) {
+  const hit = hitTest(line, mx, my);
   const id = hit ? hit.id : null;
   if (id !== hoverId) {
     hoverId = id;
@@ -169,6 +186,11 @@ canvas.addEventListener('mousemove', (e) => {
     }
   }
   canvas.style.cursor = id ? 'pointer' : 'default';
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  applyHover(e.clientX - r.left, e.clientY - r.top);
 });
 
 canvas.addEventListener('mouseleave', () => {
@@ -177,19 +199,25 @@ canvas.addEventListener('mouseleave', () => {
   line.closeGaps();
 });
 
-canvas.addEventListener('click', (e) => {
-  const r = canvas.getBoundingClientRect();
-  const mx = e.clientX - r.left;
-  const my = e.clientY - r.top;
+/**
+ * 处理一次点击：左上角 26×26 是删除按钮，其余位置点一下=复制原文。
+ * 两个来源共用这一份逻辑 —— 浏览器里走 DOM click，原生里走 Rust 发来的 card-click。
+ */
+function handleClick(mx, my) {
+  clickCount += 1;
   const hit = hitTest(line, mx, my);
   if (!hit) return;
   const rect = line.rects.get(hit.id);
-  // 左上角 26×26 是删除按钮
   if (rect && mx < rect.x + 26 && my < rect.y + 26) {
     line.drop(hit.id);
   } else {
     line.copy(hit.id);
   }
+}
+
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  handleClick(e.clientX - r.left, e.clientY - r.top);
 });
 
 // 滚轮：只有在"保留数大于一屏"时才有前后可翻
@@ -209,6 +237,75 @@ window.addEventListener('keydown', (e) => {
     hoverId = null;
   }
 });
+
+// ---------- 上报卡片矩形 ----------
+// Rust 侧靠这份矩形判断「指针是否压在卡片上」，从而临时取消整窗穿透。
+// 只在矩形真的变了才发，避免每帧都走一次 IPC。
+let lastRectsKey = '';
+function reportHitRects() {
+  if (!isNative) return;
+  const arr = [];
+  for (const it of line.items) {
+    const r = line.rects.get(it.id);
+    if (r) arr.push([r.x, r.y, r.w, r.h]);
+  }
+  const key = arr.map((a) => a.map((v) => Math.round(v)).join(',')).join(';');
+  if (key === lastRectsKey) return;
+  lastRectsKey = key;
+  tauriInvoke('set_hit_rects', { rects: arr }).catch(() => {});
+}
+
+// ---------- 原生事件：剪贴板 ----------
+function looksLikeUrl(s) {
+  const t = String(s).trim();
+  return !t.includes('\n') && t.length < 2048 && (t.startsWith('http://') || t.startsWith('https://'));
+}
+
+function addClipText(text) {
+  if (looksLikeUrl(text)) {
+    const url = String(text).trim();
+    let title = url;
+    try { title = new URL(url).host || url; } catch { /* 不是合法 URL 就原样显示 */ }
+    const img = makeLinkCard({ url, title, source: '剪贴板', dark });
+    line.hang(new Item({ kind: 'link', image: img, url, title, source: '剪贴板' }));
+  } else {
+    const img = makeTextCard({ text, source: '剪贴板', dark });
+    line.hang(new Item({ kind: 'text', image: img, text, source: '剪贴板' }));
+  }
+}
+
+function addClipImage(dataUrl) {
+  const img = new Image();
+  img.onload = () => line.hang(new Item({ kind: 'image', image: img, source: '剪贴板' }));
+  img.src = dataUrl;
+}
+
+if (isNative) {
+  const { listen } = window.__TAURI__.event;
+  // 指针位置（窗口穿透时前端收不到 mousemove，只能靠系统光标轮询）
+  let cursorSeen = false;
+  listen('cursor', (e) => {
+    const [x, y] = e.payload;
+    if (!cursorSeen) {
+      cursorSeen = true;
+      tauriInvoke('js_log', { msg: `first cursor ${x.toFixed(0)},${y.toFixed(0)}` }).catch(() => {});
+    }
+    applyHover(x, y);
+  }).catch((err) => tauriInvoke('js_log', { msg: 'listen cursor failed: ' + err }));
+
+  // 点击由 Rust 轮询鼠标左键后发来：窗口不激活，DOM 的 click 收不到。
+  listen('card-click', (e) => {
+    const [x, y] = e.payload;
+    handleClick(x, y);
+  });
+  // 剪贴板新内容
+  listen('clip', (e) => {
+    const p = e.payload || {};
+    if (p.kind === 'text') addClipText(p.text);
+    else if (p.kind === 'link') addClipText(p.url);
+    else if (p.kind === 'image') addClipImage(p.data);
+  });
+}
 
 // ---------- 工具栏 ----------
 function btn(id, fn) {
@@ -237,11 +334,15 @@ btn('clear', () => {
 
 // ---------- 启动 ----------
 resize();
-seed();
 
-// 调试用：?settle=3 表示先把模拟快进 3 秒再画第一帧。
-// 无头浏览器截图必须用它，否则拍到的永远是"刚挂上还没站稳"的瞬间。
-const params = new URLSearchParams(location.search);
+// 原生模式下线上应该是空的（真实内容由剪贴板/截图监听挂上来）；
+// 但带 LIANGYIJIA_DEMO=1 启动时会塞示例卡片，方便开发期截图验收。
+// 浏览器原型则总是塞假数据看效果。
+const nativeDemo = isNative ? await tauriInvoke('demo_mode').catch(() => false) : false;
+if (!isNative || nativeDemo) seed();
+
+nativeDebug = nativeDemo;
+if (nativeDebug) document.documentElement.classList.add('debugon');
 
 // 调试用：?demo=overflow 复现"超限清理"那一段动画。
 // 做法是清空、挂满一屏、等它们站稳，再加最后一张去触发一次掉落 ——
@@ -257,10 +358,22 @@ if (params.get('demo') === 'overflow') {
   addShot({ w: 720, h: 450, accent: '#F59E0B' });
 }
 
+// 调试用：?settle=3 表示先把模拟快进 3 秒再画第一帧。
+// 无头浏览器截图必须用它，否则拍到的永远是"刚挂上还没站稳"的瞬间。
 const settle = Number(params.get('settle') || 0);
 if (settle > 0) line.advance(settle);
 
-requestAnimationFrame(frame);
+// 原生模式：窗口默认整窗点击穿透，不挡住桌面和下面程序的点击。
+// 等第二阶段接上「指针是否在某张卡上」的轮询后，再按需临时取消穿透。
+if (isNative) tauriInvoke('set_click_through', { through: true });
+
+// ?freeze=1 只画一帧就停住：无头截图必须用它，否则浏览器会继续跑几十帧，
+// 拍到的是动画结束之后的样子（掉落卡片早就回收了）。也用来做视觉回归基准图。
+if (params.get('freeze') === '1') {
+  drawFrame();
+} else {
+  requestAnimationFrame(frame);
+}
 
 // 暴露给控制台，方便调试
 window.__line = line;
