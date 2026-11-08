@@ -413,15 +413,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static var reducesMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     private func fall(_ item: Pegged) {
-        guard isPresent, isRevealed, !item.flying, !Self.reducesMotion, let screen = panel.screen,
-              let card = cardFrame(for: item.id),
-              let image = item.thumb.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            // 线收着（或者开了减弱动态）时掉落不画出来，只从线上消失
-            log.notice("掉落动画跳过：present=\(self.isPresent, privacy: .public) revealed=\(self.isRevealed, privacy: .public) flying=\(item.flying, privacy: .public)")
-            return
-        }
+        // 掉落画在自己的全屏浮层上，不依赖那条带子是不是放下了，所以这里不再要求
+        // isRevealed（早先要求它，结果线刚收起来那一瞬间掉的卡片就整段没动画）。
+        guard isPresent else { return noteFallSkip("线没在（isPresent=false）", item) }
+        guard !item.flying else { return noteFallSkip("卡片还在飞进来", item) }
+        guard !Self.reducesMotion else { return noteFallSkip("系统开了「减弱动态效果」", item) }
+        guard let screen = panel.screen else { return noteFallSkip("拿不到屏幕", item) }
+        guard let card = cardFrame(for: item.id) else { return noteFallSkip("算不出卡片位置", item) }
+        guard let image = Self.cgImage(of: item.thumb) else { return noteFallSkip("缩略图转不出 CGImage", item) }
         log.notice("掉落动画开播：x=\(card.minX, privacy: .public)")
+        AppDelegate.appendFallLog("play x=\(Int(card.minX)) y=\(Int(card.minY)) w=\(Int(card.width))")
         CaptureFlight.fall(image: image, card: card, tilt: CGFloat(item.tilt), pinned: item.kept, on: screen)
+    }
+
+    /// 掉落动画被跳过时留个记录。
+    /// 这台机器上的系统日志在这个环境里读不到（`log show` 报 Cannot run while sandboxed），
+    /// 所以同时往 Application Support 里追加一行，出问题时可以直接翻文件。
+    private func noteFallSkip(_ reason: String, _ item: Pegged) {
+        log.notice("掉落动画跳过：\(reason, privacy: .public) flying=\(item.flying, privacy: .public)")
+        AppDelegate.appendFallLog("skip: \(reason) url=\(item.url.lastPathComponent)")
+    }
+
+    /// 把 NSImage 取成 CGImage。
+    /// cgImage(forProposedRect:) 在有些系统/图像来源上会返回 nil —— 一旦是 nil，
+    /// 掉落动画就整段被跳过（macOS 12 Intel 上就是这么没的）。补一条兜底：
+    /// 把 NSImage 直接重画进一张位图。
+    private static func cgImage(of image: NSImage) -> CGImage? {
+        if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) { return cg }
+        let size = image.size
+        guard size.width >= 1, size.height >= 1,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: Int(size.width.rounded()),
+                                         pixelsHigh: Int(size.height.rounded()),
+                                         bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0),
+              let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ctx
+        image.draw(in: NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.cgImage
+    }
+
+    /// 掉落诊断文件：~/Library/Application Support/Tendedero/fall.log
+    static func appendFallLog(_ message: String) {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else { return }
+        let dir = base.appendingPathComponent("Tendedero", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("fall.log")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
     }
 
     /// Where a card will hang, in screen coordinates, using the same layout
