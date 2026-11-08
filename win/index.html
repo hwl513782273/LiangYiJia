@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>晾衣架 · Windows 原型</title>
+  <link rel="stylesheet" href="src/style.css" />
+</head>
+<body class="dark">
+  <!-- 假桌面：真正套进 Tauri 之后这层不存在，窗口只有顶上那条带子 -->
+  <div class="desktop">
+    <div class="desktop-hint">
+      <h1>晾衣架 · Windows 版原型</h1>
+      <p>顶上那条带子就是窗口本体。下面是用来验证绳子、夹子、卡片在深色与浅色背景上是否都看得清的假桌面。</p>
+    </div>
+  </div>
+
+  <!-- 线本体：高度在脚本里按版式算，贴在窗口顶部 -->
+  <canvas id="line"></canvas>
+
+  <div id="debug" class="debug"></div>
+
+  <div class="toolbar">
+    <button id="add-shot">加一张截图</button>
+    <button id="add-text">加一条文字</button>
+    <button id="add-link">加一个链接</button>
+    <span class="sep"></span>
+    <button id="toggle-theme">切换深浅</button>
+    <button id="toggle-reveal">收起</button>
+    <button id="clear">全部取下</button>
+    <span class="tip">鼠标停到卡片上：左上角出现叉，按 Delete 直接删</span>
+  </div>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

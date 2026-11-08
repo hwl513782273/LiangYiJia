@@ -1,0 +1,140 @@
+/* 原型外壳：假桌面 + 工具栏。
+   真正打包成 Windows 应用时，body 是透明的、没有桌面这一层，
+   窗口只有 canvas 那一块（对应 Tauri 的 transparent: true / decorations: false）。 */
+
+:root {
+  --fg: #ECECEF;
+  --muted: #9A9AA2;
+  --panel: rgba(28, 28, 32, 0.72);
+  --border: rgba(255, 255, 255, 0.12);
+}
+
+body.light {
+  --fg: #1C1C1E;
+  --muted: #6B6B72;
+  --panel: rgba(255, 255, 255, 0.78);
+  --border: rgba(0, 0, 0, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  background: #101013;
+}
+
+/* 假桌面：深色是一张偏冷的渐变"壁纸"，浅色是一张暖白的 */
+.desktop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1200px 700px at 20% 10%, #2A3550 0%, transparent 60%),
+    radial-gradient(900px 600px at 85% 30%, #4A2F44 0%, transparent 55%),
+    linear-gradient(160deg, #14161C 0%, #1D2028 45%, #12141A 100%);
+  transition: background 0.35s ease;
+}
+
+body.light .desktop {
+  background:
+    radial-gradient(1200px 700px at 20% 10%, #DCE6F5 0%, transparent 60%),
+    radial-gradient(900px 600px at 85% 30%, #F3E3DC 0%, transparent 55%),
+    linear-gradient(160deg, #F4F5F8 0%, #E7E9EF 45%, #F6F3EF 100%);
+}
+
+.desktop-hint {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  max-width: 520px;
+  text-align: center;
+  padding: 0 24px;
+  pointer-events: none;
+}
+
+.desktop-hint h1 {
+  font-size: 22px;
+  font-weight: 500;
+  margin: 0 0 10px;
+  opacity: 0.92;
+}
+
+.desktop-hint p {
+  font-size: 13.5px;
+  line-height: 1.7;
+  margin: 0;
+  color: var(--muted);
+}
+
+/* 线本体：贴在窗口顶部，铺满宽度 */
+#line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  z-index: 10;
+}
+
+/* 工具栏：只是原型用来加内容/换主题的，正式版没有 */
+.toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  font-size: 12.5px;
+  z-index: 20;
+  white-space: nowrap;
+}
+
+.toolbar button {
+  font: inherit;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 11px;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.toolbar button:hover { background: rgba(255, 255, 255, 0.20); }
+body.light .toolbar button { background: rgba(0, 0, 0, 0.05); }
+body.light .toolbar button:hover { background: rgba(0, 0, 0, 0.10); }
+
+.toolbar .sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+.toolbar .tip {
+  color: var(--muted);
+  margin-left: 6px;
+  font-size: 11.5px;
+}
+
+/* 调试读数：只在 ?debug=1 时有内容，正式版不会显示 */
+.debug {
+  position: absolute;
+  left: 12px;
+  top: 232px;
+  font: 12px/1.5 ui-monospace, Menlo, monospace;
+  color: var(--muted);
+  white-space: pre;
+  z-index: 30;
+  pointer-events: none;
+}

@@ -6,3 +6,8 @@ download.py
 t.tar.gz
 .DS_Store
 iconset/
+
+# Windows 版（Tauri）
+win/node_modules/
+win/src-tauri/target/
+win/dist/
