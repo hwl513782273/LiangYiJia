@@ -269,11 +269,10 @@ final class ClipboardWatcher {
             try png.write(to: url, options: .atomic)
             // 复制来的东西可能是私密的：只有本用户能读
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            // 原文另存一份。写失败不影响挂载，所以用 try?
+            // 原文写进图片自己的扩展属性，删图片时跟着一起走。
+            // 写失败不影响挂载，所以不看返回值。
             if let text, !text.isEmpty {
-                let sidecar = Self.sidecarURL(for: url)
-                try? text.write(to: sidecar, atomically: true, encoding: .utf8)
-                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sidecar.path)
+                Self.setOriginalText(text, for: url)
             }
             last = (digest, url)
             onNew(url)
@@ -285,19 +284,68 @@ final class ClipboardWatcher {
 
     // MARK: - 点卡片还原原文
 
-    /// 卡片对应的原文文件路径（把 .png 换成 .txt）。
-    /// 调用时机：save 写原文时、restoreTextIfCardWasCopied 还原时。
-    static func sidecarURL(for card: URL) -> URL {
-        card.deletingPathExtension().appendingPathExtension("txt")
+    /// 原文存在 PNG 自己的扩展属性里，而不是旁边单独一个 .txt。
+    /// 调用时机：save 写完 PNG 之后。
+    ///
+    /// 为什么不用旁车文件：卡片被删掉时，PNG 由 Line 自己 trash 掉（那一份是有权限的），
+    /// 但再回头删那个 .txt 会在 TCC 下静默失败，于是文件夹里越积越多没有主人的 txt。
+    /// 存成扩展属性就没有这个问题——删图片本身，原文跟着一起没了。
+    /// 代价是单个属性有大小上限（约 128KB），所以超长的只留前面一部分。
+    private nonisolated static let textAttribute = "com.local.liangyijia.copiedText"
+    private nonisolated static let maxAttributeBytes = 100_000
+
+    /// 把原文写进卡片的扩展属性。
+    /// 调用时机：save 里 PNG 落盘之后。
+    private nonisolated static func setOriginalText(_ text: String, for card: URL) {
+        var payload = Data(text.utf8)
+        if payload.count > maxAttributeBytes {
+            // 太长了放不进属性，只留前面一部分，并明确告诉用户
+            let cut = String(text.prefix(maxAttributeBytes / 3)) + "\n…（原文过长，只保留了前一部分）"
+            payload = Data(cut.utf8)
+        }
+        _ = card.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return payload.withUnsafeBytes { buffer in
+                setxattr(path, textAttribute, buffer.baseAddress, payload.count, 0, 0)
+            }
+        }
     }
 
-    /// 读回某张卡片对应的原文。
-    /// 调用时机：检测到用户点了文字卡 / 链接卡，需要把剪贴板换成文字时。
+    /// 读回某张卡片对应的原文：先看扩展属性，再看早期的 .txt 旁车。
+    /// 调用时机：用户点文字卡 / 链接卡，以及悬停预览要显示全文时。
     static func originalText(of card: URL) -> String? {
+        if let text = attributeText(of: card) {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        }
+        // 兼容早期用旁车文件的卡片
         guard let text = try? String(contentsOf: sidecarURL(for: card), encoding: .utf8) else {
             return nil
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+    }
+
+    /// 从扩展属性里读原文；没有这个属性就返回 nil。
+    /// 调用时机：originalText 第一步。
+    private nonisolated static func attributeText(of card: URL) -> String? {
+        let size = card.withUnsafeFileSystemRepresentation { path -> Int in
+            guard let path else { return -1 }
+            return getxattr(path, textAttribute, nil, 0, 0, 0)
+        }
+        guard size > 0 else { return nil }
+
+        var buffer = [UInt8](repeating: 0, count: size)
+        let read = card.withUnsafeFileSystemRepresentation { path -> Int in
+            guard let path else { return -1 }
+            return getxattr(path, textAttribute, &buffer, size, 0, 0)
+        }
+        guard read == size else { return nil }
+        return String(bytes: buffer, encoding: .utf8)
+    }
+
+    /// 早期版本的原文旁车路径（把 .png 换成 .txt）。只为兼容旧卡片保留读取。
+    /// 调用时机：originalText 读扩展属性失败时的兜底。
+    static func sidecarURL(for card: URL) -> URL {
+        card.deletingPathExtension().appendingPathExtension("txt")
     }
 
     /// 检查剪贴板是不是「刚点了我们生成的文字卡 / 链接卡」，是就换成原文。

@@ -68,6 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 鼠标是何时离开卡片的（用于上面那个宽限）。
     private var hoverLeaveSince: Date?
 
+    /// 鼠标停在卡片上时临时注册的「裸 Delete」热键。
+    /// 鼠标一离开就注销，所以平时 Delete 还是 Delete。
+    /// 用 Carbon 热键而不是全局键盘监听：热键不需要任何系统权限。
+    private var hoverDeleteKeys: [HotKey] = []
+
     // What brings the line down, from the menu bar's "Bring the line down".
     // Out of the box, the first two are on and the third off.
 
@@ -764,6 +769,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if id != hoverID {
                 hoverID = id
                 hoverSince = Date()
+                // 停在哪张上，就把 Delete 临时绑到这张上
+                armHoverDelete()
             }
             guard let since = hoverSince,
                   Date().timeIntervalSince(since) >= Self.hoverDelay,
@@ -773,9 +780,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        // 指针不在任何卡片上
+        // 指针不在任何卡片上：Delete 还给系统
         hoverID = nil
         hoverSince = nil
+        disarmHoverDelete()
         guard HoverPreview.shared.isShowing else { return }
         // 留一点宽限，别让鼠标划过卡片间的空隙时预览一闪一闪
         let since = hoverLeaveSince ?? Date()
@@ -791,7 +799,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hoverID = nil
         hoverSince = nil
         hoverLeaveSince = nil
+        disarmHoverDelete()
         HoverPreview.shared.hide()
+    }
+
+    // MARK: 按 Delete 删除悬停的卡片（本 fork 新增）
+
+    /// 鼠标停到卡片上时，临时把 Delete 注册成热键；离开就注销。
+    /// 调用时机：updateHover 发现悬停的卡片变了（换了一张，或从没有到有）。
+    ///
+    /// 为什么用 Carbon 热键而不是全局键盘监听：
+    /// 1. 全局监听要「输入监控」权限。本项目是 ad-hoc 签名，每次重新编译签名指纹都变，
+    ///    系统把它当成另一个 App，授权当场作废——实测重新打包后立刻变成未授权，
+    ///    等于每改一次代码就得让用户去系统设置重勾一次。热键不需要任何权限。
+    /// 2. 热键会吃掉这一次按键，不会同时把前台文档里的字也删掉。
+    ///    鼠标停在卡片上按 Delete，本来就是要删这张卡，吃掉正是想要的。
+    private func armHoverDelete() {
+        guard hoverDeleteKeys.isEmpty else { return }
+        // 51 = Backspace（Mac 键盘上印着 delete 的那个），117 = Fn+Delete
+        for code in [kVK_Delete, kVK_ForwardDelete] {
+            let shortcut = Shortcut(keyCode: code, modifiers: [], key: "")
+            let key = HotKey(shortcut, action: { [weak self] in
+                guard let self, let id = self.hoverID else { return }
+                self.removeHovered(id)
+            })
+            if let key { hoverDeleteKeys.append(key) }
+        }
+    }
+
+    /// 注销 Delete 热键，把 Delete 还给系统。
+    /// 调用时机：鼠标离开卡片、线收起、开始拖动。
+    private func disarmHoverDelete() {
+        // HotKey 的 deinit 自己会 UnregisterEventHotKey，清空数组就够了
+        guard !hoverDeleteKeys.isEmpty else { return }
+        hoverDeleteKeys.removeAll()
+    }
+
+    /// 删掉悬停的那张卡：文件进废纸篓，卡片按原版动画掉下去。
+    /// 调用时机：Delete 热键触发。
+    ///
+    /// 文字卡和链接卡旁边有一份原文 .txt，原版不认识它，得顺手清掉，
+    /// 否则文件夹里会积一堆没有主人的 txt。只在卡片真的删掉了才删，
+    /// 不然卡片还在、原文没了，点它就没东西可还原。
+    private func removeHovered(_ id: UUID) {
+        // 先收预览，否则卡片掉下去时那个大窗还挂在原地
+        endHover()
+        // 原文存在 PNG 的扩展属性里，文件一进废纸篓就全带走了，不用另外清理
+        line.trash(id)
     }
 
     /// 某张卡在屏幕上的位置。
