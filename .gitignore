@@ -1,5 +1,8 @@
 .build/
 build/
+*.dmg
+*.app/
 download.py
 t.tar.gz
 .DS_Store
+iconset/

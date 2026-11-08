@@ -1,6 +1,7 @@
 MIT License
 
-Copyright (c) 2026 Alejandro Buján
+Copyright (c) 2026 Alejandro Buján — original project Tendedero
+Copyright (c) 2026 banqiu — modifications, published as LiangYiJia / 晾衣架
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -32,3 +33,7 @@ You may build and use the app as published, and you may refer to Tendedero
 to say where your work comes from. Modified or redistributed versions must
 use a different name and a different icon, and must not suggest that they
 are Tendedero or are endorsed by its author.
+
+This repository follows that rule: it ships under the name LiangYiJia / 晾衣架
+with its own icon (app-icon.png), and contains neither the Tendedero name in
+the app's UI nor the Tendedero icon artwork.
