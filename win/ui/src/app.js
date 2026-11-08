@@ -205,12 +205,14 @@ function frame(now) {
 // 收不到 mousemove，改由 Rust 侧轮询系统光标后通过 'cursor' 事件送坐标过来。
 /**
  * 应用「保留张数」。
- * 0 = 一屏能放几张就几张；25/50/100 = 保留这么多，再多就把最老的自动删掉
- * （掉落动画那套在 line.js 里本来就有，这里只负责把参数传进去）。
+ * 0 = 一屏能放几张就几张；25/50/100 = 保留这么多，再多就把最老的自动删掉。
+ * 调用时机：启动时读一次设置、托盘里改保留数、窗口尺寸变化。
  */
 function applyKeep(n) {
   line.keepOnLine = n > 0 ? n : null;
   line.resize(window.innerWidth);   // 重算 maxItems
+  // 调小保留数时，多出来的要按满线的规矩下线（否则数字改了线却没变）
+  line.trim();
   showLine();
 }
 

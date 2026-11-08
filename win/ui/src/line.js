@@ -9,6 +9,15 @@ import { Spring, SPRINGS } from './spring.js';
 let nextId = 1;
 const uid = () => `p${nextId++}`;
 
+/**
+ * 调试输出。原生窗口开不了 DevTools，只能把关键步骤送到 Rust 侧写进日志
+ * （Rust 那边只有 LIANGYIJIA_DEBUG=1 才真的落盘）。
+ */
+function dbg(msg) {
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke) t.core.invoke('js_log', { msg }).catch(() => {});
+}
+
 /** 挂在线上的一个东西：截图 / 文字 / 链接。 */
 export class Item {
   constructor({ kind, image = null, title = '', source = '', text = '', url = '' }) {
@@ -114,32 +123,76 @@ export class Line {
     this.scrollTo(0);
     arrive(item);
 
-    this.enforceCapacity();
+    // 满线只清一张：一次进来一条内容，也只该掉一张（一次掉好几张会糊成一团）。
+    // 正在清（已经滚到最老那头、等它掉）时不另开一条，免得两张同时被点名；
+    // 那一轮掉完会自己把还超出的补上。
+    if (this.liveCount > this.maxItems && this.lettingGo == null) {
+      const oldest = this.oldestLoose();
+      if (oldest) this.letGo(oldest.id);
+    }
     return item;
   }
 
   /**
-   * 让某一张下线：直接掉下去，后面立刻补位。
+   * 让某一张下线。
    *
-   * 早期版本会先滚到最老那一头再掉、掉完再滚回来。实际用起来反而看不清，
-   * 而且钉住的卡片在滚动过程中也跟着动 —— 已经去掉，只保留掉落动画本身。
+   * 线能滚动（设了保留 25/50/100 且一屏放不下）时走一遍「看得见的过场」：
+   * ① 先滑到最老那一头（否则最老那张在屏幕左边外面，掉了也没人看见）；
+   * ② 等滑动停下再让它照原样掉下去；
+   * ③ 后面那张立刻补位；
+   * ④ 滑回最新一头，还超出的顺手补清。
+   * 这一段照抄 macOS 版 Line.swift 的 letGo(stepAside:startDelay:)。
+   *
+   * @param {boolean} stepAside 一次要清好几张时传 false：不做滑动过场，直接掉。
    */
-  letGo(id) {
-    this.drop(id);
-    this.sweepFallen();
+  letGo(id, stepAside = true) {
+    const scrolls = stepAside && this.keepOnLine != null && this.items.length > this.visibleCount;
+    if (!scrolls) {
+      // 线不滚动、或者一屏看得全：最老那张本来就在最前面，直接掉，但马上补位
+      this.drop(id);
+      if (stepAside) this.sweepFallen();
+      return;
+    }
+
+    this.lettingGo = id;
+
+    // ① 滑到最老一头（snap：让卡片真的跟着滑动走到最前面，而不是被弹簧拖在后面）
+    this.scrollTo(this.layout.frontScroll(this.items.length, this.visibleCount), 0.35, easeInOut, true);
+
+    dbg(`letGo ${id} scroll→${Math.round(this.layout.frontScroll(this.items.length, this.visibleCount))} count=${this.items.length} vis=${this.visibleCount} max=${this.maxItems}`);
+
+    // ② 滑动走完再掉，掉落起点才对得上卡片当时的位置
+    this.after(0.42, () => {
+      if (!this.items.some((i) => i.id === id)) { this.lettingGo = null; return; }
+      this.drop(id);
+      // ③ 后面那张立刻补到最前面：数量少了一张，可滚动的余量也跟着少一格，
+      //    不夹一下的话线会停在滚过头的空处。
+      this.scroll = Math.min(this.scroll, this.layout.frontScroll(this.items.length, this.visibleCount));
+      this.lettingGo = null;
+
+      // ④ 掉完滑回最新一头，剩下还超出的按「不做过场」清掉
+      this.after(0.9, () => {
+        this.scrollTo(0, 0.35, easeInOut, true);
+        if (this.liveCount > this.maxItems) {
+          const next = this.oldestLoose();
+          if (next) this.after(0.45, () => this.letGo(next.id, false));
+        }
+      });
+    });
   }
 
   /**
-   * 超出保留张数就删最老的「没被钉住的」。
-   * 全被钉住了就停手（宁可超一点，也不动钉住的）。
+   * 把「保留张数」调小之后，超出的老照片按满线的规矩下线。
+   * 调用时机：托盘里改了保留数，或者窗口变大导致一屏放得下更多。
    */
-  enforceCapacity() {
+  trim() {
     let guard = 0;
     while (this.liveCount > this.maxItems && guard++ < 200) {
       const oldest = this.oldestLoose();
-      if (!oldest) break;
-      this.letGo(oldest.id);
+      if (!oldest) break;           // 全被钉住了就停手：宁可超一点，也不动钉住的
+      this.letGo(oldest.id, false);
     }
+    this.scrollTo(0);
   }
 
   /**
@@ -185,6 +238,7 @@ export class Line {
       r = { x: px - cw / 2, y: top + 14, w: cw, h: ch, rot: it.tilt };
     }
 
+    dbg(`drop ${id} rect=${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}x${Math.round(r.h)}`);
     this.items.splice(i, 1);
     this.lastFall = this.time;
     this.flights.push({
@@ -206,14 +260,21 @@ export class Line {
   /** 指针离开线：没有需要收的空位了（掉落的已即时摘除）。 */
   closeGaps() {}
 
-  /** 平滑滚到某个偏移量。 */
-  scrollTo(to, dur = 0.35, ease = easeInOut) {
+  /**
+   * 平滑滚到某个偏移量。
+   *
+   * @param {boolean} snap true = 这期间卡片位置直接跟着动画走，不走横向弹簧。
+   *   清理时要滑几千像素（25 张就是 3300 多），弹簧追不上：
+   *   实测滑到最老的 0.42 秒后那张卡还在 x=-299（屏幕外），掉落动画等于演给空气看。
+   *   直接把位置交给动画，滑到哪儿卡片就在哪儿。
+   */
+  scrollTo(to, dur = 0.35, ease = easeInOut, snap = false) {
     if (Math.abs(to - this.scroll) < 0.5) {
       this.scroll = to;
       this.scrollTween = null;
       return;
     }
-    this.scrollTween = { from: this.scroll, to, elapsed: 0, dur, ease };
+    this.scrollTween = { from: this.scroll, to, elapsed: 0, dur, ease, snap };
   }
 
   /** 一阵风：每 7~16 秒吹一次，所有卡片随机轻推一下。 */
@@ -279,7 +340,10 @@ export class Line {
       // 目标横坐标由版式算；第一帧直接落到目标位置，否则会从 0 飞过来
       const tx = this.layout.x(i, this.items.length, this.width, this.visibleCount,
                                this.scroll, this.pinnedLead, this.keepOnLine);
-      if (!it.xInit) { it.px.jump(tx); it.xInit = true; } else { it.px.target = tx; }
+      // 清理时的滑动直接落到动画位置上（snap）：几千像素的位移用弹簧跟会严重滞后，
+      // 等它追到时卡片已经掉在屏幕外了。
+      const snapping = this.scrollTween != null && this.scrollTween.snap;
+      if (!it.xInit || snapping) { it.px.jump(tx); it.xInit = true; } else { it.px.target = tx; }
       it.px.step(dt);
 
       it.swing.step(dt);

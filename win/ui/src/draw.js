@@ -379,12 +379,22 @@ export function render(ctx, line, opts) {
   ctx.restore();
 }
 
-/** 点击命中测试：命中返回 item，否则 null。 */
+/**
+ * 点击命中测试：命中返回 item，否则 null。
+ *
+ * 顺序必须和绘制顺序一致：钉住的卡片画在最上层，命中也要先问它们。
+ * 之前按 items 的数组顺序取第一张命中的，钉住的卡就会把它下面那张普通卡
+ * 顶出来 —— 结果是钉住的卡片怎么点都没反应（像死了一样）。
+ */
 export function hitTest(line, mx, my) {
-  for (const [id, r] of line.rects) {
-    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
-      return line.items.find((i) => i.id === id) ?? null;
-    }
+  const ordered = [
+    ...line.items.filter((i) => i.kept),
+    ...line.items.filter((i) => !i.kept),
+  ];
+  for (const it of ordered) {
+    const r = line.rects.get(it.id);
+    if (!r) continue;
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) return it;
   }
   return null;
 }
