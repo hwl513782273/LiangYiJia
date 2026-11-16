@@ -202,11 +202,28 @@ final class Line: ObservableObject {
     func copy(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
         putOnClipboard(item.url)
+        // 点哪张就把它挪到最新一头：刚复制过的东西算「刚用过」，
+        // 不该还赖在最老的位置等着下次满线被清掉。
+        promoteToNewest(id)
 
         copiedID = id
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             if self?.copiedID == id { self?.copiedID = nil }
         }
+    }
+
+    /// 把这张挪到线的最右（最新那头）。
+    /// 钉住的（固定在绳结左边）、拿在手上的、正在掉的都不动。
+    /// 位置由 LineView 上那个 .animation(.spring(...), value: items.map(\.id)) 滑过去。
+    func promoteToNewest(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        let item = items[i]
+        guard !item.kept, !item.held, !item.falling else { return }
+        guard i != items.count - 1 else { return }
+        items.remove(at: i)
+        items.append(item)
+        save()
+        log.notice("复制后挪到最新：\(item.url.lastPathComponent, privacy: .public) \(i, privacy: .public) -> \(self.items.count - 1, privacy: .public)")
     }
 
     /// The file last put on the clipboard, and the clipboard's change count

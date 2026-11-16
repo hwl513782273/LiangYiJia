@@ -292,6 +292,25 @@ export class Line {
     }
   }
 
+  /**
+   * 把这张挪到线的最右（最新那头）。
+   *
+   * 点击卡片复制 = 这条内容「刚用过」，它就该回到最新位置，
+   * 而不是还赖在最老那一端等着下一次满线时被清掉。
+   * 钉住的（固定在绳结左边）、拿在手上的、正在掉的都不动。
+   */
+  promote(id) {
+    const i = this.items.findIndex((x) => x.id === id);
+    if (i < 0) return false;
+    const it = this.items[i];
+    if (it.kept || it.held) return false;
+    if (i === this.items.length - 1) return false;
+    this.items.splice(i, 1);
+    this.items.push(it);
+    dbg(`promote ${id} ${i} -> ${this.items.length - 1}`);
+    return true;
+  }
+
   /** 点击复制：给卡片盖一个"已复制"的小标。 */
   copy(id) {
     this.copiedId = id;

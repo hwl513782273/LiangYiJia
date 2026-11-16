@@ -319,9 +319,10 @@ function handleClick(mx, my) {
     return;
   }
 
-  // ③ 其它位置 = 复制回剪贴板
+  // ③ 其它位置 = 复制回剪贴板（并把它挪到最新那头：刚用过的东西不该待在最老的位置）
   line.copy(hit.id);
   copyItemToClipboard(hit);
+  line.promote(hit.id);
 }
 
 canvas.addEventListener('click', (e) => {
